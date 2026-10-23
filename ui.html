@@ -4,70 +4,231 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>账户限流监控 · CPA</title>
+  <script>
+    const monitorTheme = (() => {
+      const root = document.documentElement;
+      root.toggleAttribute('data-cpa-embedded', window.parent !== window);
+      const key = 'cpa-plugin-limit-appearance';
+      const themes = new Set(['auto', 'light', 'white', 'dark']);
+      const system = window.matchMedia('(prefers-color-scheme: dark)');
+      let selected = 'auto';
+      let host = null;
+      const tokens = [
+        '--bg-primary', '--bg-secondary', '--bg-tertiary', '--bg-hover',
+        '--text-primary', '--text-secondary', '--text-tertiary',
+        '--border-color', '--border-hover', '--primary-color', '--primary-hover',
+        '--primary-active', '--primary-contrast', '--shadow',
+        '--success-badge-bg', '--success-badge-text', '--success-badge-border',
+        '--failure-badge-bg', '--failure-badge-text', '--failure-badge-border',
+        '--amber-text', '--amber-10', '--amber-30',
+        '--app-radius-md', '--app-radius-sm', '--app-input-bg'
+      ];
+      function readPreference() {
+        try {
+          const saved = localStorage.getItem(key);
+          selected = themes.has(saved) ? saved : 'auto';
+        } catch {}
+      }
+      function apply() {
+        if (host) {
+          const theme = host.getAttribute('data-theme');
+          root.dataset.theme = theme === 'dark' || theme === 'white' ? theme : 'light';
+          const style = window.parent.getComputedStyle(host);
+          for (const token of tokens) {
+            const value = style.getPropertyValue(token).trim();
+            if (value) root.style.setProperty(token, value);
+            else root.style.removeProperty(token);
+          }
+          root.style.setProperty('--limit-font', window.parent.getComputedStyle(host.ownerDocument.body || host).fontFamily);
+          return;
+        }
+        let theme = selected;
+        if (theme === 'auto') {
+          try {
+            const saved = JSON.parse(localStorage.getItem('cli-proxy-theme'))?.state?.theme;
+            if (themes.has(saved)) theme = saved;
+          } catch {}
+        }
+        root.dataset.theme = theme === 'auto' ? (system.matches ? 'dark' : 'white') : theme;
+      }
+      try {
+        if (window.parent !== window) {
+          const candidate = window.parent.document.documentElement;
+          if (window.parent.getComputedStyle(candidate).getPropertyValue('--bg-secondary').trim()) host = candidate;
+        }
+      } catch {}
+      readPreference();
+      apply();
+      if (host) {
+        const observer = new MutationObserver(apply);
+        const observe = () => {
+          observer.observe(host, { attributes: true, attributeFilter: ['data-theme', 'class', 'style'] });
+          apply();
+        };
+        observe();
+        window.addEventListener('pagehide', () => observer.disconnect());
+        window.addEventListener('pageshow', observe);
+      } else {
+        system.addEventListener('change', apply);
+        window.addEventListener('storage', event => {
+          if (event.key === key || event.key === 'cli-proxy-theme' || event.key === null) {
+            readPreference();
+            apply();
+          }
+        });
+      }
+      return {
+        embedded: Boolean(host),
+        get: () => selected,
+        set: value => {
+          if (!themes.has(value)) return;
+          selected = value;
+          try { localStorage.setItem(key, value); } catch {}
+          apply();
+        }
+      };
+    })();
+  </script>
   <style>
-    :root { color-scheme: light dark; font: 14px/1.6 system-ui, -apple-system, sans-serif; --bg: #f6f8fa; --panel: #fff; --text: #182230; --muted: #657084; --border: #e4e8ee; --accent: #2563eb; --good: #177a54; --good-bg: #edf8f1; --warn: #9b6400; --warn-bg: #fff7df; --bad: #b53636; --bad-bg: #fff0f0; }
+    :root {
+      color-scheme: light;
+      --limit-bg: var(--bg-secondary, #faf9f5);
+      --limit-panel: var(--bg-primary, #f0eee8);
+      --limit-subtle: var(--bg-tertiary, #e9e6df);
+      --limit-hover: var(--bg-hover, #e9e6df);
+      --limit-text: var(--text-primary, #2d2a26);
+      --limit-muted: var(--text-secondary, #6d6760);
+      --limit-border: var(--border-color, #e3e1db);
+      --limit-border-hover: var(--border-hover, #cecac4);
+      --limit-primary: var(--primary-color, #8b8680);
+      --limit-primary-hover: var(--primary-hover, #7f7a74);
+      --limit-primary-active: var(--primary-active, #726d67);
+      --limit-primary-contrast: var(--primary-contrast, #fff);
+      --limit-good: var(--success-badge-text, #065f46);
+      --limit-good-bg: var(--success-badge-bg, #d1fae5);
+      --limit-good-border: var(--success-badge-border, #6ee7b7);
+      --limit-warn: var(--amber-text, #92400e);
+      --limit-warn-bg: var(--amber-10, rgba(217, 119, 6, .1));
+      --limit-warn-border: var(--amber-30, rgba(217, 119, 6, .3));
+      --limit-bad: var(--failure-badge-text, #8a3a30);
+      --limit-bad-bg: var(--failure-badge-bg, rgba(198, 87, 70, .14));
+      --limit-bad-border: var(--failure-badge-border, rgba(198, 87, 70, .35));
+      --limit-shadow: var(--shadow, 0 1px 2px rgb(0 0 0 / .08));
+    }
+    :root[data-theme='white'] {
+      --limit-bg: var(--bg-secondary, #fff);
+      --limit-panel: var(--bg-primary, #fff);
+      --limit-subtle: var(--bg-tertiary, #f6f6f6);
+      --limit-hover: var(--bg-hover, #f6f6f6);
+      --limit-border: var(--border-color, #e5e5e5);
+      --limit-border-hover: var(--border-hover, #ccc);
+    }
+    :root[data-theme='dark'] {
+      color-scheme: dark;
+      --limit-bg: var(--bg-secondary, #151412);
+      --limit-panel: var(--bg-primary, #1d1b18);
+      --limit-subtle: var(--bg-tertiary, #262320);
+      --limit-hover: var(--bg-hover, #2e2a26);
+      --limit-text: var(--text-primary, #f6f4f1);
+      --limit-muted: var(--text-secondary, #c9c3bb);
+      --limit-border: var(--border-color, #3a3530);
+      --limit-border-hover: var(--border-hover, #5a544d);
+      --limit-primary-hover: var(--primary-hover, #9a948e);
+      --limit-primary-active: var(--primary-active, #a6a099);
+      --limit-good: var(--success-badge-text, #6ee7b7);
+      --limit-good-bg: var(--success-badge-bg, rgba(6, 78, 59, .3));
+      --limit-good-border: var(--success-badge-border, #059669);
+      --limit-warn: var(--amber-text, #fcd34d);
+      --limit-warn-bg: var(--amber-10, rgba(245, 158, 11, .14));
+      --limit-warn-border: var(--amber-30, rgba(245, 158, 11, .38));
+      --limit-bad: var(--failure-badge-text, #f1b0a6);
+      --limit-bad-bg: var(--failure-badge-bg, rgba(198, 87, 70, .24));
+      --limit-bad-border: var(--failure-badge-border, rgba(198, 87, 70, .5));
+      --limit-shadow: var(--shadow, 0 1px 3px rgb(0 0 0 / .3));
+    }
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--text); }
-    main { max-width: 1200px; margin: 0 auto; padding: 32px 24px; }
+    [hidden] { display: none !important; }
+    body { margin: 0; min-height: 100vh; background: var(--limit-bg); color: var(--limit-text); font: 14px/1.5 var(--limit-font, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif); }
+    main { width: 100%; margin: 0 auto; padding: 24px; }
+    :root[data-cpa-embedded] main { padding: 80px clamp(20px, 3vw, 48px) 40px; }
     header, .toolbar, .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     header { align-items: flex-start; margin-bottom: 24px; }
-    h1 { margin: 0; font-size: 24px; letter-spacing: -.5px; }
-    h2 { margin: 0; font-size: 16px; }
-    p { margin: 6px 0 0; }
-    .muted, small { color: var(--muted); }
-    .toolbar { flex-wrap: wrap; justify-content: flex-end; }
-    button, select { font: inherit; color: inherit; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); min-height: 38px; padding: 7px 12px; }
-    button { cursor: pointer; }
-    button:active { transform: scale(.97); }
+    h1 { margin: 0; font-size: 28px; font-weight: 700; line-height: 1.2; }
+    h2 { margin: 0; font-size: 18px; font-weight: 700; }
+    p { margin: 8px 0 0; }
+    .muted, small { color: var(--limit-muted); }
+    .toolbar { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    button, select { font: inherit; border: 1px solid var(--limit-border); border-radius: var(--app-radius-sm, 8px); min-height: 40px; padding: 10px 12px; }
+    select { color: var(--limit-text); background: var(--app-input-bg, var(--limit-bg)); cursor: pointer; }
+    .button-primary { display: inline-flex; justify-content: center; align-items: center; gap: 8px; min-width: 114px; padding: 10px 14px; font-weight: 600; color: var(--limit-primary-contrast); border-color: var(--limit-primary); background: var(--limit-primary); cursor: pointer; transition: transform 160ms cubic-bezier(.23, 1, .32, 1), background-color 150ms ease, border-color 150ms ease; }
+    .button-primary svg { width: 16px; height: 16px; flex: none; }
+    .button-primary:active:not(:disabled) { transform: scale(.97); background: var(--limit-primary-active); }
     button:disabled { cursor: wait; opacity: .6; }
-    button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-    .auto-label { display: flex; align-items: center; gap: 8px; color: var(--muted); white-space: nowrap; }
-    .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }
-    .card, .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
-    .card { padding: 18px 20px; }
-    .card-label { color: var(--muted); font-size: 13px; }
-    .card-value { display: block; font-size: 30px; font-weight: 650; line-height: 1.5; font-variant-numeric: tabular-nums; }
+    button:focus-visible, select:focus-visible, summary:focus-visible, .scroll:focus-visible { outline: 2px solid var(--limit-primary); outline-offset: 3px; }
+    .auto-label { display: flex; align-items: center; gap: 8px; color: var(--limit-muted); font-size: 13px; white-space: nowrap; }
+    .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .card, .panel { background: var(--limit-panel); border: 1px solid var(--limit-border); border-radius: var(--app-radius-md, 12px); box-shadow: var(--limit-shadow); }
+    .card { padding: 24px; }
+    .card-label { color: var(--limit-muted); font-size: 13px; }
+    .card-value { display: block; margin: 8px 0; font-size: 32px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
     .card small { font-size: 12px; }
-    .panel { margin-bottom: 18px; overflow: hidden; }
-    .panel-heading { padding: 18px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-    .policy { padding: 16px 20px; display: flex; flex-wrap: wrap; gap: 12px 28px; }
-    .policy strong { margin-left: 8px; font-weight: 600; color: var(--text); }
-    .config-guide { padding: 0 20px 18px; color: var(--muted); font-size: 13px; }
-    .config-guide strong { color: var(--text); }
-    .config-examples { margin-top: 0; padding: 0 20px 18px; }
-    .config-examples summary { color: var(--accent); font-size: 13px; }
+    .panel { margin-bottom: 24px; overflow: hidden; }
+    .panel-heading { padding: 20px 24px; border-bottom: 1px solid var(--limit-border); flex-wrap: wrap; }
+    .policy { padding: 20px 24px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+    .policy > span { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+    .policy strong { font-size: 14px; font-weight: 600; color: var(--limit-text); }
+    .config-guide { margin-top: 0; padding: 0 24px 16px; color: var(--limit-muted); font-size: 13px; }
+    .config-guide strong { color: var(--limit-text); }
+    .config-examples { margin-top: 0; padding: 0 24px 20px; }
+    .config-examples summary { color: var(--limit-text); font-size: 13px; font-weight: 600; }
     .config-examples p { margin-top: 14px; }
-    pre { margin: 8px 0 0; padding: 12px 14px; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
+    pre { margin: 8px 0 0; padding: 12px 14px; overflow-x: auto; border: 1px solid var(--limit-border); border-radius: 8px; background: var(--limit-bg); color: var(--limit-text); }
     .scroll { overflow-x: auto; }
     table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-    th, td { padding: 14px 20px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
-    th { background: var(--bg); color: var(--muted); font-size: 12px; font-weight: 500; }
+    th, td { padding: 16px 24px; border-bottom: 1px solid var(--limit-border); text-align: left; white-space: nowrap; }
+    th { background: var(--limit-bg); color: var(--limit-muted); font-size: 12px; font-weight: 600; }
+    td { font-size: 13px; }
     tbody tr:last-child td { border-bottom: 0; }
-    code { font: 12px ui-monospace, SFMono-Regular, monospace; }
+    code { font: 12px/1.6 ui-monospace, 'SF Mono', 'Cascadia Mono', 'JetBrains Mono', 'Fira Code', Menlo, Consolas, 'Liberation Mono', monospace; }
     .usage { min-width: 135px; }
-    progress { display: block; width: 132px; height: 5px; margin-top: 6px; accent-color: var(--accent); }
-    .badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 6px; font-size: 12px; font-weight: 500; }
-    .good { color: var(--good); background: var(--good-bg); }
-    .warn { color: var(--warn); background: var(--warn-bg); }
-    .bad { color: var(--bad); background: var(--bad-bg); }
-    .empty { text-align: center; padding: 42px 20px; color: var(--muted); white-space: normal; }
-    .error { color: var(--bad); background: var(--bad-bg); padding: 12px 16px; border-radius: 8px; margin-bottom: 18px; }
-    .error[hidden] { display: none; }
-    .footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; }
-    details { margin-top: 16px; color: var(--muted); font-size: 12px; }
+    progress { appearance: none; display: block; width: 132px; height: 4px; border: 0; border-radius: 9999px; background: var(--limit-subtle); margin-top: 8px; overflow: hidden; }
+    progress::-webkit-progress-bar { background: var(--limit-subtle); border-radius: 9999px; }
+    progress::-webkit-progress-value { background: var(--limit-primary); border-radius: 9999px; }
+    progress::-moz-progress-bar { background: var(--limit-primary); border-radius: 9999px; }
+    .badge { display: inline-flex; align-items: center; padding: 3px 9px; border: 1px solid; border-radius: 6px; font-size: 12px; font-weight: 600; line-height: 1.5; }
+    .good { color: var(--limit-good); background: var(--limit-good-bg); border-color: var(--limit-good-border); }
+    .warn { color: var(--limit-warn); background: var(--limit-warn-bg); border-color: var(--limit-warn-border); }
+    .bad { color: var(--limit-bad); background: var(--limit-bad-bg); border-color: var(--limit-bad-border); }
+    .empty { text-align: center; padding: 48px 24px; color: var(--limit-muted); white-space: normal; }
+    .error { color: var(--limit-bad); background: var(--limit-bad-bg); border: 1px solid var(--limit-bad-border); padding: 16px; border-radius: 8px; margin-bottom: 24px; }
+    .footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; color: var(--limit-muted); font-size: 12px; }
+    details { margin-top: 16px; color: var(--limit-muted); font-size: 12px; }
     summary { cursor: pointer; width: fit-content; }
-    @media (prefers-color-scheme: dark) {
-      :root { --bg: #13171e; --panel: #1b212c; --text: #e8edf5; --muted: #a0acbc; --border: #303949; --accent: #7ba6ff; --good: #7ed3a8; --good-bg: #173b2c; --warn: #f2c36a; --warn-bg: #3c3015; --bad: #ffa2a2; --bad-bg: #462828; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: var(--limit-bg); }
+    ::-webkit-scrollbar-thumb { background: var(--limit-border); border-radius: 9999px; }
+    @media (hover: hover) and (pointer: fine) {
+      .button-primary:hover:not(:disabled) { background: var(--limit-primary-hover); border-color: var(--limit-primary-hover); }
+      select:hover { border-color: var(--limit-border-hover); }
+      tbody tr:hover td { background: var(--limit-hover); }
+      ::-webkit-scrollbar-thumb:hover { background: var(--limit-border-hover); }
     }
-    @media (max-width: 700px) {
-      main { padding: 20px 14px; }
+    @media (prefers-reduced-motion: reduce) {
+      .button-primary { transition: none; }
+      .button-primary:active:not(:disabled) { transform: none; }
+    }
+    @media (max-width: 768px) {
+      main { padding: 20px 16px; }
       header { flex-direction: column; gap: 16px; }
       .toolbar { justify-content: flex-start; }
-      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-      .card { padding: 14px; }
-      .card-value { font-size: 26px; }
-      .policy { gap: 8px 20px; }
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .card { padding: 16px; }
+      .card-value { font-size: 28px; }
+      .panel-heading { padding: 16px; }
+      .policy { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 16px; }
+      .config-guide, .config-examples { padding-left: 16px; padding-right: 16px; }
       th, td { padding: 12px 16px; }
+      :root[data-cpa-embedded] main { padding: 80px 16px 24px; }
     }
   </style>
 </head>
@@ -76,10 +237,13 @@
   <header>
     <div><h1>账户限流监控</h1><p class="muted">按上游账户共享限额，保留会话亲和。</p></div>
     <div class="toolbar">
+      <label id="appearance-control" class="auto-label" for="appearance" hidden>外观
+        <select id="appearance"><option value="auto">自动</option><option value="light">羊毛纸</option><option value="white">纯白</option><option value="dark">暗色</option></select>
+      </label>
       <label class="auto-label" for="interval">自动刷新
         <select id="interval"><option value="0">关闭</option><option value="5" selected>每 5 秒</option><option value="10">每 10 秒</option><option value="30">每 30 秒</option></select>
       </label>
-      <button id="refresh" type="button">立即刷新</button>
+      <button id="refresh" class="button-primary" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1.6L20 8M4 16l2.4 2.6A7 7 0 0 0 17.9 17"/></svg><span id="refresh-label">立即刷新</span></button>
     </div>
   </header>
   <div id="error" class="error" role="alert" hidden></div>
@@ -129,6 +293,12 @@
 </main>
 <script>
   const button = document.getElementById('refresh');
+  const buttonLabel = document.getElementById('refresh-label');
+  const appearance = document.getElementById('appearance');
+  appearance.value = monitorTheme.get();
+  document.getElementById('appearance-control').hidden = monitorTheme.embedded;
+  appearance.addEventListener('change', () => monitorTheme.set(appearance.value));
+  window.addEventListener('storage', () => { appearance.value = monitorTheme.get(); });
   const interval = document.getElementById('interval');
   const format = new Intl.NumberFormat('zh-CN');
   const setText = (id, value) => { document.getElementById(id).textContent = value; };
@@ -199,7 +369,7 @@
     if (loading) return;
     loading = true;
     button.disabled = true;
-    button.textContent = '刷新中…';
+    buttonLabel.textContent = '刷新中…';
     try {
       const url = new URL(location.href);
       url.pathname = url.pathname.replace(/\/ui\/?$/, '/status');
@@ -221,7 +391,7 @@
     } finally {
       loading = false;
       button.disabled = false;
-      button.textContent = '立即刷新';
+      buttonLabel.textContent = '立即刷新';
     }
   }
 

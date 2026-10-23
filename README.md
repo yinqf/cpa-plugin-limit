@@ -115,6 +115,13 @@ CPA's **账户限流监控** plugin menu opens the Chinese monitoring page:
 /v0/resource/plugins/cpa-plugin-limit/status
 ```
 
+The page follows CPA's typography, cards, controls, and tables. Same-origin
+embedding synchronizes host color tokens and the light, white, and dark themes;
+host-injected theme tokens are also supported. When opened independently or
+embedded across origins, an appearance selector provides explicit themes. Auto
+mode uses the same-origin CPA theme preference when available, then the system
+preference. No CPA or management frontend changes are required.
+
 Four summary cards show occupied account slots, attempts admitted in the last
 60 seconds, lifetime admitted attempts, and lifetime rejections. Account rows show
 utilization bars, rate/concurrency status, retry timing, and rejection breakdowns.
