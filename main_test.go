@@ -38,14 +38,14 @@ func call[T any](t *testing.T, l *limiter, method string, value any) T {
 func TestRegistrationAndVisualConfigurationContract(t *testing.T) {
 	l, _ := testLimiter()
 	reg := call[registration](t, l, pluginabi.MethodPluginRegister, registerRequest{SchemaVersion: 6})
-	if reg.SchemaVersion != 2 || reg.Metadata.Name != pluginName || reg.Capabilities["scheduler"] || !reg.Capabilities["request_lifecycle_plugin"] {
+	if reg.SchemaVersion != 2 || reg.Metadata.Name != pluginName || !reg.Capabilities["scheduler"] || !reg.Capabilities["scheduler_across_priorities"] || !reg.Capabilities["request_lifecycle_plugin"] {
 		t.Fatalf("unexpected registration: %+v", reg)
 	}
 	fields := make(map[string]bool)
 	for _, field := range reg.Metadata.ConfigFields {
 		fields[field.Name] = true
 	}
-	for _, key := range []string{"requests_per_minute", "max_concurrency", "auth_indexes", "account_groups", "account_limits", "account_display"} {
+	for _, key := range []string{"requests_per_minute", "max_concurrency", "auth_indexes", "account_groups", "account_limits", "account_display", "routing_mode", "session_affinity_ttl_seconds"} {
 		if !fields[key] {
 			t.Fatalf("missing visual field %s", key)
 		}
@@ -67,7 +67,7 @@ func TestRegistrationAndVisualConfigurationContract(t *testing.T) {
 	if err := json.Unmarshal(encoded, &wire); err != nil {
 		t.Fatal(err)
 	}
-	wantDefaults := map[string]string{"requests_per_minute": "5", "max_concurrency": "1", "auth_indexes": "[]", "account_groups": "{}", "account_limits": "{}", "account_display": `"email"`}
+	wantDefaults := map[string]string{"requests_per_minute": "5", "max_concurrency": "1", "auth_indexes": "[]", "account_groups": "{}", "account_limits": "{}", "account_display": `"email"`, "routing_mode": `"capacity-aware"`, "session_affinity_ttl_seconds": "3600"}
 	if wire.Metadata.Name != pluginName || len(wire.Metadata.ConfigFields) != len(wantDefaults) {
 		t.Fatalf("metadata fields were lost on the wire: %s", encoded)
 	}
@@ -84,8 +84,8 @@ func TestRegistrationAndVisualConfigurationContract(t *testing.T) {
 
 func TestVisualEditorBlankValuesRestoreDefaults(t *testing.T) {
 	l, _ := testLimiter()
-	call[registration](t, l, pluginabi.MethodPluginReconfigure, registerRequest{SchemaVersion: 6, ConfigYAML: []byte("requests_per_minute: 9\nmax_concurrency: 3\nauth_indexes: [a]\naccount_groups: {a: shared}\naccount_limits: {shared: {max_concurrency: 2}}\naccount_display: masked_email")})
-	call[registration](t, l, pluginabi.MethodPluginReconfigure, registerRequest{SchemaVersion: 6, ConfigYAML: []byte("requests_per_minute: null\nmax_concurrency: null\nauth_indexes: null\naccount_groups: null\naccount_limits: null\naccount_display: null\n")})
+	call[registration](t, l, pluginabi.MethodPluginReconfigure, registerRequest{SchemaVersion: 6, ConfigYAML: []byte("requests_per_minute: 9\nmax_concurrency: 3\nauth_indexes: [a]\naccount_groups: {a: shared}\naccount_limits: {shared: {max_concurrency: 2}}\naccount_display: masked_email\nrouting_mode: guard-only\nsession_affinity_ttl_seconds: 10")})
+	call[registration](t, l, pluginabi.MethodPluginReconfigure, registerRequest{SchemaVersion: 6, ConfigYAML: []byte("requests_per_minute: null\nmax_concurrency: null\nauth_indexes: null\naccount_groups: null\naccount_limits: null\naccount_display: null\nrouting_mode: null\nsession_affinity_ttl_seconds: null\n")})
 	if !reflect.DeepEqual(l.cfg, defaultConfig()) {
 		t.Fatalf("clearing fields in the visual editor did not restore defaults: %+v", l.cfg)
 	}
@@ -141,6 +141,7 @@ func TestInvalidConfigurationDoesNotReplaceActiveSettings(t *testing.T) {
 		"defaults: &limits {max_concurrency: 1.5}\n<<: *limits",
 		"account_limits: {a: {requests_per_minute: 1.5}}",
 		"account_display: invalid", "account_display: [email]",
+		"routing_mode: invalid", "session_affinity_ttl_seconds: -1", "session_affinity_ttl_seconds: 86401", "session_affinity_ttl_seconds: 1.5",
 	} {
 		t.Run(cfg, func(t *testing.T) {
 			raw, _ := json.Marshal(registerRequest{SchemaVersion: 6, ConfigYAML: []byte(cfg)})
@@ -173,8 +174,14 @@ func TestRPCAdmissionPreservesAffinityAndReturnsRetryable429(t *testing.T) {
 	l, _ := testLimiter()
 	for _, method := range []string{pluginabi.MethodRequestInterceptBefore, pluginabi.MethodRequestInterceptAfter} {
 		resp := intercept(t, l, method, "first", "account")
-		if resp.Terminate || len(resp.Body) > 0 || len(resp.Headers) > 0 || len(resp.ClearHeaders) > 0 {
+		if resp.Terminate || len(resp.Body) > 0 {
 			t.Fatalf("allowed request was rewritten: %+v", resp)
+		}
+		if method == pluginabi.MethodRequestInterceptBefore && (resp.Headers.Get(routingHeader) != "first" || len(resp.Headers) != 1) {
+			t.Fatal("missing private scheduler correlation header")
+		}
+		if method == pluginabi.MethodRequestInterceptAfter && (len(resp.Headers) != 0 || !reflect.DeepEqual(resp.ClearHeaders, []string{routingHeader})) {
+			t.Fatal("private scheduler header would reach the upstream")
 		}
 	}
 	intercept(t, l, pluginabi.MethodRequestInterceptBefore, "second", "account")

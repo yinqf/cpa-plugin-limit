@@ -14,6 +14,8 @@ const (
 	displayFingerprint = "fingerprint"
 	displayMaskedEmail = "masked_email"
 	displayEmail       = "email"
+	routingCapacity    = "capacity-aware"
+	routingGuard       = "guard-only"
 )
 
 type limits struct {
@@ -27,11 +29,13 @@ type limitOverride struct {
 }
 
 type config struct {
-	limits         `yaml:",inline"`
-	AuthIndexes    []string                 `yaml:"auth_indexes" json:"auth_indexes"`
-	AccountGroups  map[string]string        `yaml:"account_groups" json:"account_groups"`
-	AccountLimits  map[string]limitOverride `yaml:"account_limits" json:"account_limits"`
-	AccountDisplay string                   `yaml:"account_display" json:"account_display"`
+	limits             `yaml:",inline"`
+	AuthIndexes        []string                 `yaml:"auth_indexes" json:"auth_indexes"`
+	AccountGroups      map[string]string        `yaml:"account_groups" json:"account_groups"`
+	AccountLimits      map[string]limitOverride `yaml:"account_limits" json:"account_limits"`
+	AccountDisplay     string                   `yaml:"account_display" json:"account_display"`
+	RoutingMode        string                   `yaml:"routing_mode" json:"routing_mode"`
+	SessionAffinityTTL int                      `yaml:"session_affinity_ttl_seconds" json:"session_affinity_ttl_seconds"`
 }
 
 type registerRequest struct {
@@ -40,7 +44,7 @@ type registerRequest struct {
 }
 
 func defaultConfig() config {
-	return config{limits: limits{RequestsPerMinute: 5, MaxConcurrency: 1}, AccountDisplay: displayEmail}
+	return config{limits: limits{RequestsPerMinute: 5, MaxConcurrency: 1}, AccountDisplay: displayEmail, RoutingMode: routingCapacity, SessionAffinityTTL: 3600}
 }
 
 func parseConfig(raw []byte) (config, error) {
@@ -77,6 +81,16 @@ func parseConfig(raw []byte) (config, error) {
 	default:
 		return config{}, fmt.Errorf("account_display must be fingerprint, masked_email, or email")
 	}
+	cfg.RoutingMode = strings.TrimSpace(cfg.RoutingMode)
+	if cfg.RoutingMode == "" {
+		cfg.RoutingMode = routingCapacity
+	}
+	if cfg.RoutingMode != routingCapacity && cfg.RoutingMode != routingGuard {
+		return config{}, fmt.Errorf("routing_mode must be capacity-aware or guard-only")
+	}
+	if cfg.SessionAffinityTTL < 0 || cfg.SessionAffinityTTL > 86400 {
+		return config{}, fmt.Errorf("session_affinity_ttl_seconds must be between 0 and 86400; zero disables affinity")
+	}
 	seen := make(map[string]bool)
 	for i, value := range cfg.AuthIndexes {
 		value = strings.TrimSpace(value)
@@ -112,7 +126,7 @@ func validateIntegerFields(node *yaml.Node) error {
 }
 
 func validateLimitValues(fields map[string]any) error {
-	for _, key := range []string{"requests_per_minute", "max_concurrency"} {
+	for _, key := range []string{"requests_per_minute", "max_concurrency", "session_affinity_ttl_seconds"} {
 		switch fields[key].(type) {
 		case nil, int, int64, uint64:
 		default:

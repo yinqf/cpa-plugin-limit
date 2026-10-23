@@ -17,17 +17,39 @@ there are no background goroutines, storage writes, or upstream network calls.
 2. `request.intercept_after` reads `selected_auth_index`, falling back to
    `selected_auth_id`. It atomically checks account concurrency and the rolling
    window before recording an admitted attempt.
-3. A full account returns HTTP **429**, an OpenAI/Claude-compatible JSON error,
-   and `Retry-After`. Requests are rejected immediately; there is no blocking queue.
-4. `request.complete` releases the request's account reservations on success,
+3. The default `capacity-aware` scheduler checks capacity before selection and
+   reserves attempts and slots atomically. Sessions keep their account while it
+   has room, then move to another eligible candidate. New sessions favor lower
+   load within the highest available priority tier; positive weights scale the
+   load comparison and zero-weight candidates are excluded.
+4. When every eligible candidate is full, the after-auth guard returns HTTP **429**,
+   an OpenAI/Claude-compatible JSON error, and `Retry-After`. There is no queue.
+5. `request.complete` releases the request's account reservations on success,
    failure, rejection, or cancellation. Repeated completion is harmless.
 
-The plugin does not implement `scheduler.pick`, rewrite payloads or headers, or
-change affinity bindings. Continue using CPA's session affinity or the billing
-plugin's routing affinity. A local refusal terminates the request before the
-executor; it does not report an upstream account failure or start account cooldown.
+The plugin implements `scheduler.pick` and keeps bounded session bindings with a
+default idle TTL of one hour. It accepts only the host's eligible candidate list,
+preserving provider/model compatibility, cooldown exclusions, and pinned accounts.
+Session identities come from host canonical metadata, explicit session headers,
+body session/cache/thread fields, or derived execution metadata; requests without
+a session are balanced without affinity. Caller/session namespaces are hashed in
+memory. This does not reproduce CPA's complete LCP or hierarchical-session matcher.
 
-Each observed after-auth invocation consumes an attempt, including failed attempts
+An internal `X-Cpa-Limit-Request` header correlates selection with lifecycle;
+it is overwritten before selection and removed after selection before execution.
+Payloads, client session headers, and prompt cache keys are unchanged. Unexecuted
+reservations are released on reselection or completion without consuming RPM.
+Concurrency monitoring includes preselected pending slots.
+
+CPA uses **one scheduler plugin at a time**. Choose `routing_mode: guard-only` and
+reload the plugin if another scheduler must remain in control. This restores the
+old behavior of rejecting a full selected account without rerouting. Mode changes
+require reload because the host caches capability registration. The monitor shows
+whether scheduler callbacks were observed. Home dispatch may bypass local routing;
+the after-auth guard still protects observed admissions. A local refusal does not
+report an upstream failure or start account cooldown.
+
+Each admitted after-auth invocation consumes an attempt, including failed attempts
 and retries that invoke the hook again. Completion never refunds RPM. Retries
 within the same logical request reuse its account concurrency reservation. If a
 request fails over across accounts, reservations on **all** admitted accounts are
@@ -37,7 +59,7 @@ just because 60 seconds elapsed.
 
 ## Configuration
 
-Configure all six fields in **CPA → Plugins → cpa-plugin-limit → Configuration**.
+Configure all eight fields in **CPA → Plugins → cpa-plugin-limit → Configuration**.
 The plugin declares numeric, JSON-array, and JSON-object editors with defaults and
 Chinese field descriptions. Saving uses CPA's existing plugin reconfiguration;
 manual YAML editing is optional. Clearing a field restores its default.
@@ -64,13 +86,15 @@ plugins:
       account_groups: {}
       account_limits: {}
       account_display: email
+      routing_mode: capacity-aware
+      session_affinity_ttl_seconds: 3600
 
 routing:
   session-affinity: true
   session-affinity-ttl: "1h"
 ```
 
-The six plugin fields are declared for CPA's visual plugin configuration editor.
+The eight plugin fields are declared for CPA's visual plugin configuration editor.
 Numeric limits must be integers in `0..10000`; **0 disables that dimension**.
 Omitted fields use defaults; omitted per-account fields inherit global values.
 Standard host fields such as `enabled`, `priority`, and `store` are accepted.
@@ -80,6 +104,10 @@ the configuration editor. Email modes show only the email without a fingerprint;
 missing addresses and failed lookups have explicit placeholders. Long addresses
 wrap so the full email remains visible. Display settings do not change account
 identity or admission limits.
+
+`routing_mode` defaults to `capacity-aware`; `guard-only` disables plugin routing.
+`session_affinity_ttl_seconds` accepts integers in `0..86400`; zero disables plugin
+affinity. Full accounts cause the session to rebind to the selected replacement.
 
 To restrict only Codex credentials, list their indexes in `auth_indexes`. The
 plugin does not infer providers from model names or protocol formats, since
@@ -139,10 +167,13 @@ show a stale-data warning.
 
 Email labels come from the host's `host.auth.list` callback and only its explicit
 email field. File names, account strings, and labels are never treated as email
-addresses. Lookups are cached for 30 seconds and run only during monitoring;
-admission never waits for them. Aliases and observed group members deduplicate
+addresses. Lookups are cached for 30 seconds and shared with scheduler ID-to-index
+resolution. Host callbacks never hold the admission mutex. Aliases and observed group members deduplicate
 email labels. Credentials with matching emails retain separate limit buckets.
 Unsupported or failed callbacks display an email lookup failure placeholder.
+Without directory resolution the scheduler uses observed aliases; unknown grouped
+credentials defer bucket creation to the after-auth guard. This can degrade the
+first unknown credential selection to guard-only behavior while preserving limits.
 
 These modern resource routes are **not management-authenticated by CPA**. They
 expose counters, thresholds, timestamps, 16-character SHA-256 fingerprints, and
@@ -156,7 +187,9 @@ No deprecated `/v0/management` routes are added.
 `status` returns `version`, `observed_at`, `quiescing`, `active_requests`,
 `active_slots`, `window_requests`, lifetime `admitted`/`rejected` attempt counters,
 `rate_rejected`, `concurrency_rejected`, effective `defaults`, redacted `scope`
-counts, `account_display`, `email_lookup_available`, and `items`. Each item contains
+counts, `account_display`, `email_lookup_available`, `routing_mode`,
+`session_affinity_ttl_seconds`, `affinity_sessions`, optional `scheduler_last_seen`,
+`pending_attempts`, and `items`. Each item contains
 `account` (always a fingerprint), an optional `label` (email display),
 `active`, `window_requests`, configured limits, `rate_retry_after_seconds`, and
 admitted/rate-rejected/concurrency-rejected counters. Idle buckets disappear once
@@ -164,7 +197,7 @@ their history expires, so per-account counters then reset. `window_requests` is
 capped at 10000 while RPM is disabled. The concurrency retry hint is one second;
 the actual release time depends on the running request.
 
-State is bounded to 4096 accounts and 16384 active request trackers, plus 16384
+State is bounded to 4096 accounts and 16384 active request trackers and session bindings, plus 16384
 recent completion IDs. Exhaustion or missing required host identity returns **503**
 instead of silently bypassing protection. Completion is asynchronous in CPA, so a
 recently finished request may briefly retain its slot until notification arrives.

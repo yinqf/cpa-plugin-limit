@@ -53,9 +53,11 @@ func pluginRegistration() registration {
 				{ConfigField: pluginapi.ConfigField{Name: "account_groups", Type: pluginapi.ConfigFieldTypeObject, Description: "账户合并：填写凭据索引到分组名的 JSON 对象，同一真实账户的多份凭据映射到同一分组名，共用计数。留空或 {} 不合并；修改前需等在途请求结束和最近 60 秒记录过期。完整示例见账户限流监控页面的配置填写示例。"}, Default: map[string]string{}},
 				{ConfigField: pluginapi.ConfigField{Name: "account_limits", Type: pluginapi.ConfigFieldTypeObject, Description: "单账户阈值：填写以分组名或未分组凭据索引为键的 JSON 对象。未填字段继承全局值，0 关闭对应限制。留空或 {} 使用全局配置。完整示例见账户限流监控页面的配置填写示例。"}, Default: map[string]any{}},
 				{ConfigField: pluginapi.ConfigField{Name: "account_display", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{displayEmail, displayMaskedEmail, displayFingerprint}, Description: "监控账户显示方式：email 为完整邮箱，默认值；masked_email 为脱敏邮箱；fingerprint 为账户指纹。邮箱模式不显示指纹，无邮箱时显示未提供邮箱。监控接口无需管理登录，请在网关限制访问。仅影响显示，不改变账户分组和计数。"}, Default: displayEmail},
+				{ConfigField: pluginapi.ConfigField{Name: "routing_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{routingCapacity, routingGuard}, Description: "调度模式：capacity-aware 默认在选账户前检查容量，保留可用账户的会话亲和，满额后切换其他可用账户；guard-only 仅在选定账户后拦截，不切换账户。CPA 同时只采用一个调度插件；切换模式后重新加载插件。"}, Default: routingCapacity},
+				{ConfigField: pluginapi.ConfigField{Name: "session_affinity_ttl_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "插件会话亲和缓存有效期，默认 3600 秒，范围 0～86400；每次命中刷新有效期，0 关闭亲和。仅 capacity-aware 模式生效；账户满额时切换并更新绑定。"}, Default: 3600},
 			},
 		},
-		Capabilities: map[string]bool{"request_interceptor": true, "request_lifecycle_plugin": true, "management_api": true},
+		Capabilities: map[string]bool{"scheduler": true, "scheduler_across_priorities": true, "request_interceptor": true, "request_lifecycle_plugin": true, "management_api": true},
 	}
 }
 
@@ -73,7 +75,15 @@ func (l *limiter) handle(method string, raw []byte) ([]byte, error) {
 		if err := l.configure(cfg); err != nil {
 			return nil, err
 		}
-		return ok(pluginRegistration())
+		reg := pluginRegistration()
+		reg.Capabilities["scheduler"] = cfg.RoutingMode == routingCapacity
+		return ok(reg)
+	case pluginabi.MethodSchedulerPick:
+		var req pluginapi.SchedulerPickRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, fmt.Errorf("invalid scheduler request")
+		}
+		return ok(l.pick(req))
 	case pluginabi.MethodRequestInterceptBefore, pluginabi.MethodRequestInterceptAfter:
 		var req pluginapi.RequestInterceptRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
@@ -85,7 +95,20 @@ func (l *limiter) handle(method string, raw []byte) ([]byte, error) {
 		} else {
 			result = l.admit(strings.TrimSpace(req.RequestID), metadataString(req.Metadata, "selected_auth_index"), metadataString(req.Metadata, "selected_auth_id"))
 		}
-		return ok(termination(result, req.SourceFormat))
+		response := termination(result, req.SourceFormat)
+		if method == pluginabi.MethodRequestInterceptBefore && result.status == 0 {
+			session := requestSession(req)
+			l.mu.Lock()
+			if tracked := l.requests[strings.TrimSpace(req.RequestID)]; tracked != nil && l.cfg.RoutingMode == routingCapacity {
+				tracked.session = session
+				response.Headers = http.Header{routingHeader: {strings.TrimSpace(req.RequestID)}}
+			}
+			l.mu.Unlock()
+		}
+		if method == pluginabi.MethodRequestInterceptAfter {
+			response.ClearHeaders = []string{routingHeader}
+		}
+		return ok(response)
 	case pluginabi.MethodRequestComplete:
 		var req pluginapi.RequestCompletion
 		if err := json.Unmarshal(raw, &req); err != nil {

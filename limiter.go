@@ -64,10 +64,15 @@ type accountState struct {
 	admitted            uint64
 	rateRejected        uint64
 	concurrencyRejected uint64
+	pendingAttempts     int
+	pendingSlots        int
 }
 
 type requestState struct {
-	accounts map[string]struct{}
+	accounts    map[string]struct{}
+	session     string
+	pending     string
+	pendingSlot bool
 }
 
 type decision struct {
@@ -82,28 +87,32 @@ func unavailable(code, message string) decision {
 }
 
 type limiter struct {
-	mu              sync.Mutex
-	now             func() time.Time
-	cfg             config
-	quiescing       bool
-	accounts        map[string]*accountState
-	aliases         map[string]string
-	requests        map[string]*requestState
-	completed       map[string]*list.Element
-	completionOrder list.List
-	nextCleanup     time.Time
-	admitted        uint64
-	rejected        uint64
-	rateRejected    uint64
-	busyRejected    uint64
-	directory       emailDirectory
+	mu                sync.Mutex
+	now               func() time.Time
+	cfg               config
+	quiescing         bool
+	accounts          map[string]*accountState
+	aliases           map[string]string
+	requests          map[string]*requestState
+	completed         map[string]*list.Element
+	completionOrder   list.List
+	nextCleanup       time.Time
+	admitted          uint64
+	rejected          uint64
+	rateRejected      uint64
+	busyRejected      uint64
+	directory         emailDirectory
+	bindings          map[string]*list.Element
+	bindingOrder      list.List
+	pickSequence      uint64
+	schedulerLastSeen time.Time
 }
 
 func newLimiter(now func() time.Time) *limiter {
 	return &limiter{
 		now: now, cfg: defaultConfig(), accounts: make(map[string]*accountState),
 		aliases: make(map[string]string), requests: make(map[string]*requestState),
-		completed: make(map[string]*list.Element),
+		completed: make(map[string]*list.Element), bindings: make(map[string]*list.Element),
 	}
 }
 
@@ -113,6 +122,13 @@ func (l *limiter) configure(cfg config) error {
 	l.cleanup(l.now())
 	if !maps.Equal(cfg.AccountGroups, l.cfg.AccountGroups) && len(l.accounts) > 0 {
 		return fmt.Errorf("account_groups cannot change while accounts have active requests or attempts in the last 60 seconds; drain traffic before changing identity groups")
+	}
+	if cfg.RoutingMode != l.cfg.RoutingMode || cfg.SessionAffinityTTL != l.cfg.SessionAffinityTTL {
+		clear(l.bindings)
+		l.bindingOrder.Init()
+	}
+	if cfg.RoutingMode != l.cfg.RoutingMode {
+		l.schedulerLastSeen = time.Time{}
 	}
 	l.cfg = cfg
 	return nil
@@ -150,6 +166,7 @@ func (l *limiter) admit(requestID, index, id string) decision {
 	if req == nil {
 		return unavailable("limiter_request_inactive", "The host did not begin this request, or it has already completed.")
 	}
+	l.releasePending(req)
 	if index == "" && id == "" {
 		return unavailable("limiter_missing_account", "The host did not provide the selected upstream credential identity.")
 	}
@@ -162,20 +179,7 @@ func (l *limiter) admit(requestID, index, id string) decision {
 		return unavailable("limiter_identity_conflict", "The host linked conflicting credential identities; drain these credentials before retrying.")
 	}
 	account := l.accounts[key]
-	included := l.cfg.includes(index, id)
-	if !included && len(key) > 6 && key[:6] == "group:" {
-		for _, selected := range l.cfg.AuthIndexes {
-			included = included || l.cfg.AccountGroups[selected] == name
-		}
-	}
-	if !included && account != nil {
-		for _, selected := range l.cfg.AuthIndexes {
-			_, byIndex := account.aliases["index:"+selected]
-			_, byID := account.aliases["id:"+selected]
-			included = included || byIndex || byID
-		}
-	}
-	if !included {
+	if !l.included(index, id, key) {
 		return decision{}
 	}
 	if account == nil {
@@ -192,13 +196,16 @@ func (l *limiter) admit(requestID, index, id string) decision {
 	account.history.prune(now)
 	policy := l.cfg.accountLimits(account.name)
 	_, reserved := req.accounts[key]
-	if !reserved && policy.MaxConcurrency > 0 && account.active >= policy.MaxConcurrency {
+	if !reserved && policy.MaxConcurrency > 0 && account.active+account.pendingSlots >= policy.MaxConcurrency {
 		account.concurrencyRejected++
 		l.rejected++
 		l.busyRejected++
 		return decision{status: 429, code: "account_concurrency_exceeded", message: "The selected upstream account is busy; retry without changing the session.", retryAfter: time.Second}
 	}
-	if wait := account.history.retryAfter(now, policy.RequestsPerMinute); wait > 0 {
+	if wait := account.history.retryAfter(now, policy.RequestsPerMinute); wait > 0 || policy.RequestsPerMinute > 0 && account.history.count()+account.pendingAttempts >= policy.RequestsPerMinute {
+		if wait <= 0 {
+			wait = time.Second
+		}
 		account.rateRejected++
 		l.rejected++
 		l.rateRejected++
@@ -247,6 +254,9 @@ func (l *limiter) identity(index, id string) (key, name string, identities []str
 		}
 	}
 	if existingKey != "" {
+		if index != "" && group == "" && len(existingKey) > 3 && existingKey[:3] == "id:" {
+			l.accounts[existingKey].name = index
+		}
 		return existingKey, l.accounts[existingKey].name, identities, nil
 	}
 	return key, name, identities, nil
@@ -259,6 +269,7 @@ func (l *limiter) complete(id string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if req := l.requests[id]; req != nil {
+		l.releasePending(req)
 		for key := range req.accounts {
 			l.accounts[key].active--
 		}
@@ -277,7 +288,7 @@ func (l *limiter) complete(id string) {
 func (l *limiter) cleanup(now time.Time) {
 	for key, account := range l.accounts {
 		account.history.prune(now)
-		if account.active == 0 && account.history.count() == 0 {
+		if account.active == 0 && account.pendingAttempts == 0 && account.history.count() == 0 {
 			for identity := range account.aliases {
 				delete(l.aliases, identity)
 			}
@@ -308,21 +319,26 @@ type accountSnapshot struct {
 }
 
 type snapshot struct {
-	Version        string            `json:"version"`
-	ObservedAt     time.Time         `json:"observed_at"`
-	Quiescing      bool              `json:"quiescing"`
-	ActiveRequests int               `json:"active_requests"`
-	Admitted       uint64            `json:"admitted"`
-	Rejected       uint64            `json:"rejected"`
-	RateRejected   uint64            `json:"rate_rejected"`
-	BusyRejected   uint64            `json:"concurrency_rejected"`
-	ActiveSlots    int               `json:"active_slots"`
-	WindowRequests int               `json:"window_requests"`
-	Defaults       limits            `json:"defaults"`
-	Scope          scopeSnapshot     `json:"scope"`
-	AccountDisplay string            `json:"account_display"`
-	EmailAvailable bool              `json:"email_lookup_available"`
-	Items          []accountSnapshot `json:"items"`
+	Version            string            `json:"version"`
+	ObservedAt         time.Time         `json:"observed_at"`
+	Quiescing          bool              `json:"quiescing"`
+	ActiveRequests     int               `json:"active_requests"`
+	Admitted           uint64            `json:"admitted"`
+	Rejected           uint64            `json:"rejected"`
+	RateRejected       uint64            `json:"rate_rejected"`
+	BusyRejected       uint64            `json:"concurrency_rejected"`
+	ActiveSlots        int               `json:"active_slots"`
+	WindowRequests     int               `json:"window_requests"`
+	Defaults           limits            `json:"defaults"`
+	Scope              scopeSnapshot     `json:"scope"`
+	AccountDisplay     string            `json:"account_display"`
+	EmailAvailable     bool              `json:"email_lookup_available"`
+	Items              []accountSnapshot `json:"items"`
+	RoutingMode        string            `json:"routing_mode"`
+	SessionAffinityTTL int               `json:"session_affinity_ttl_seconds"`
+	AffinitySessions   int               `json:"affinity_sessions"`
+	SchedulerLastSeen  *time.Time        `json:"scheduler_last_seen,omitempty"`
+	PendingAttempts    int               `json:"pending_attempts"`
 }
 
 type scopeSnapshot struct {
@@ -346,16 +362,24 @@ func (l *limiter) snapshot() snapshot {
 		ActiveRequests: len(l.requests), Admitted: l.admitted, Rejected: l.rejected,
 		RateRejected: l.rateRejected, BusyRejected: l.busyRejected, Defaults: l.cfg.limits,
 		AccountDisplay: l.cfg.AccountDisplay,
-		Scope:          scopeSnapshot{AllCredentials: len(l.cfg.AuthIndexes) == 0, SelectedCount: len(l.cfg.AuthIndexes), GroupCount: len(groups), OverrideCount: len(l.cfg.AccountLimits)},
-		Items:          make([]accountSnapshot, 0, len(l.accounts)),
+		RoutingMode:    l.cfg.RoutingMode, SessionAffinityTTL: l.cfg.SessionAffinityTTL,
+		Scope: scopeSnapshot{AllCredentials: len(l.cfg.AuthIndexes) == 0, SelectedCount: len(l.cfg.AuthIndexes), GroupCount: len(groups), OverrideCount: len(l.cfg.AccountLimits)},
+		Items: make([]accountSnapshot, 0, len(l.accounts)),
+	}
+	l.pruneBindings(now)
+	result.AffinitySessions = len(l.bindings)
+	if !l.schedulerLastSeen.IsZero() {
+		seen := l.schedulerLastSeen
+		result.SchedulerLastSeen = &seen
 	}
 	for key, account := range l.accounts {
-		result.ActiveSlots += account.active
+		result.ActiveSlots += account.active + account.pendingSlots
+		result.PendingAttempts += account.pendingAttempts
 		result.WindowRequests += account.history.count()
 		policy := l.cfg.accountLimits(account.name)
 		digest := sha256.Sum256([]byte(key))
 		result.Items = append(result.Items, accountSnapshot{
-			Account: hex.EncodeToString(digest[:8]), Active: account.active,
+			Account: hex.EncodeToString(digest[:8]), Active: account.active + account.pendingSlots,
 			WindowRequests: account.history.count(), RequestsPerMinute: policy.RequestsPerMinute, MaxConcurrency: policy.MaxConcurrency,
 			RateRetryAfter: retrySeconds(account.history.retryAfter(now, policy.RequestsPerMinute)),
 			Admitted:       account.admitted, RateRejected: account.rateRejected, ConcurrencyRejected: account.concurrencyRejected,

@@ -25,6 +25,7 @@ type emailDirectory struct {
 	load      func() ([]credentialEmail, error)
 	next      time.Time
 	emails    map[string]string
+	indexes   map[string]string
 	available bool
 }
 
@@ -32,6 +33,7 @@ func (d *emailDirectory) setLoader(load func() ([]credentialEmail, error)) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.load, d.next, d.emails, d.available = load, time.Time{}, nil, false
+	d.indexes = nil
 }
 
 func (d *emailDirectory) lookup(now time.Time) (map[string]string, bool) {
@@ -41,6 +43,7 @@ func (d *emailDirectory) lookup(now time.Time) (map[string]string, bool) {
 		return d.emails, d.available
 	}
 	d.next, d.emails, d.available = now.Add(emailCacheTTL), nil, false
+	d.indexes = nil
 	if d.load == nil {
 		return nil, false
 	}
@@ -50,9 +53,17 @@ func (d *emailDirectory) lookup(now time.Time) (map[string]string, bool) {
 	}
 	emails := make(map[string]string)
 	ambiguous := make(map[string]bool)
+	indexes := make(map[string]string)
+	ambiguousIndexes := make(map[string]bool)
 	for i, file := range files {
 		if i >= maxTrackedRequests {
 			break
+		}
+		if file.ID != "" && file.AuthIndex != "" && len(file.ID) <= 4096 && len(file.AuthIndex) <= 4096 {
+			if previous := indexes[file.ID]; previous != "" && previous != file.AuthIndex {
+				ambiguousIndexes[file.ID] = true
+			}
+			indexes[file.ID] = file.AuthIndex
 		}
 		email := validEmail(file.Email)
 		if email == "" {
@@ -71,8 +82,19 @@ func (d *emailDirectory) lookup(now time.Time) (map[string]string, bool) {
 	for identity := range ambiguous {
 		delete(emails, identity)
 	}
+	for id := range ambiguousIndexes {
+		delete(indexes, id)
+	}
 	d.emails, d.available = emails, true
+	d.indexes = indexes
 	return emails, true
+}
+
+func (d *emailDirectory) lookupIndexes(now time.Time) map[string]string {
+	d.lookup(now)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.indexes
 }
 
 func validEmail(value string) string {

@@ -265,6 +265,7 @@
       <span class="muted">账户分组 / 单独配置<strong id="overrides">—</strong></span>
     </div>
     <p class="config-guide">在 CPA <strong>插件管理 → cpa-plugin-limit → 配置</strong> 中编辑全部参数，保存后生效。单账户配置会覆盖全局阈值；数值为 0 表示关闭对应限制。</p>
+    <p id="routing-detail" class="config-guide" role="status">正在读取账户调度状态…</p>
     <details class="config-examples">
       <summary>配置填写示例</summary>
       <p>将对应 JSON 复制到配置编辑器的同名输入框，再将示例凭据索引替换为实际值。以下三个示例可以配合使用。</p>
@@ -338,6 +339,9 @@
     setText('default-concurrency', state.defaults.max_concurrency ? state.defaults.max_concurrency + ' 个请求' : '不限制');
     setText('scope', state.scope.all_credentials ? '所有上游凭据' : state.scope.selected_count + ' 个指定凭据及其分组');
     setText('overrides', state.scope.group_count + ' / ' + state.scope.override_count);
+    setText('routing-detail', state.routing_mode === 'capacity-aware'
+      ? '容量感知调度：' + (state.scheduler_last_seen ? '已接入，账户满额时切换其他可用账户。' : state.admitted > 0 ? '尚未收到调度回调，请检查其他调度插件或 Home 模式；当前仅能执行选后拦截。' : '等待首次账户选择。') + ' 亲和有效期 ' + state.session_affinity_ttl_seconds + ' 秒，缓存 ' + state.affinity_sessions + ' 个会话，待执行预占 ' + state.pending_attempts + ' 次。'
+      : '仅拦截模式：账户由 CPA 选择，满额后直接返回 429，不切换账户。');
     const health = document.getElementById('health');
     health.textContent = state.quiescing ? '正在停止接收请求' : '运行正常';
     health.className = 'badge ' + (state.quiescing ? 'warn' : 'good');

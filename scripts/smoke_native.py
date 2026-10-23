@@ -63,7 +63,8 @@ def main():
 
     registration = call("plugin.register", {"schema_version": 6})
     assert registration["metadata"]["Name"] == "cpa-plugin-limit"
-    assert not registration["capabilities"].get("scheduler")
+    assert registration["capabilities"]["scheduler"]
+    assert registration["capabilities"]["scheduler_across_priorities"]
     fields = {field["Name"]: field for field in registration["metadata"]["ConfigFields"]}
     assert fields["requests_per_minute"]["Default"] == 5
     assert fields["max_concurrency"]["Default"] == 1
@@ -72,6 +73,8 @@ def main():
     assert fields["account_limits"]["Default"] == {}
     assert fields["account_display"]["Default"] == "email"
     assert fields["account_display"]["Type"] == "enum"
+    assert fields["routing_mode"]["Default"] == "capacity-aware"
+    assert fields["session_affinity_ttl_seconds"]["Default"] == 3600
 
     host_buffers = {}
     host_calls = []
@@ -172,6 +175,23 @@ def main():
     assert not fallback["email_lookup_available"]
     assert all("label" not in row for row in fallback["items"])
     assert fallback["admitted"] == 6 and fallback["rejected"] == 2
+    call("plugin.reconfigure", {"schema_version": 6, "config_yaml": base64.b64encode(b"requests_per_minute: 2\nmax_concurrency: 0").decode()})
+    selected = []
+    for i in range(5):
+        request_id = f"routing-{i}"
+        started = call("request.intercept_before", {"RequestID": request_id, "Headers": {"Session-Id": ["dummy-hot-session"]}})
+        picked = call("scheduler.pick", {"Provider": "codex", "Model": "dummy-model", "Options": {"Headers": started["Headers"]}, "Candidates": [{"ID": "route-a"}, {"ID": "route-b"}]})
+        assert picked["Handled"] and picked["AuthID"] in {"route-a", "route-b"}
+        admitted = call("request.intercept_after", {"RequestID": request_id, "Headers": started["Headers"], "Metadata": {"selected_auth_index": picked["AuthID"], "selected_auth_id": picked["AuthID"]}})
+        assert admitted["ClearHeaders"] == ["X-Cpa-Limit-Request"]
+        if i < 4:
+            assert not admitted["Terminate"], admitted
+            selected.append(picked["AuthID"])
+        else:
+            assert admitted["StatusCode"] == 429 and admitted["ResponseHeaders"]["Retry-After"]
+        complete(request_id)
+    assert selected == ["route-a", "route-a", "route-b", "route-b"], selected
+    print("Native scheduler smoke passed: sticky session, full-account failover, pool exhaustion, internal header removal")
     call("plugin.quiesce", {})
     assert call("request.intercept_before", {"RequestID": "stopped"})["StatusCode"] == 503
     api.shutdown()
