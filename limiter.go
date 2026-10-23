@@ -96,6 +96,7 @@ type limiter struct {
 	rejected        uint64
 	rateRejected    uint64
 	busyRejected    uint64
+	directory       emailDirectory
 }
 
 func newLimiter(now func() time.Time) *limiter {
@@ -293,15 +294,17 @@ func (l *limiter) quiesce() {
 }
 
 type accountSnapshot struct {
-	Account             string `json:"account"`
-	Active              int    `json:"active"`
-	WindowRequests      int    `json:"window_requests"`
-	RequestsPerMinute   int    `json:"requests_per_minute"`
-	MaxConcurrency      int    `json:"max_concurrency"`
-	RateRetryAfter      int    `json:"rate_retry_after_seconds"`
-	Admitted            uint64 `json:"admitted"`
-	RateRejected        uint64 `json:"rate_rejected"`
-	ConcurrencyRejected uint64 `json:"concurrency_rejected"`
+	Account             string   `json:"account"`
+	Label               string   `json:"label,omitempty"`
+	Active              int      `json:"active"`
+	WindowRequests      int      `json:"window_requests"`
+	RequestsPerMinute   int      `json:"requests_per_minute"`
+	MaxConcurrency      int      `json:"max_concurrency"`
+	RateRetryAfter      int      `json:"rate_retry_after_seconds"`
+	Admitted            uint64   `json:"admitted"`
+	RateRejected        uint64   `json:"rate_rejected"`
+	ConcurrencyRejected uint64   `json:"concurrency_rejected"`
+	identities          []string `json:"-"`
 }
 
 type snapshot struct {
@@ -317,6 +320,8 @@ type snapshot struct {
 	WindowRequests int               `json:"window_requests"`
 	Defaults       limits            `json:"defaults"`
 	Scope          scopeSnapshot     `json:"scope"`
+	AccountDisplay string            `json:"account_display"`
+	EmailAvailable bool              `json:"email_lookup_available"`
 	Items          []accountSnapshot `json:"items"`
 }
 
@@ -340,8 +345,9 @@ func (l *limiter) snapshot() snapshot {
 		Version: pluginVersion, ObservedAt: now.UTC(), Quiescing: l.quiescing,
 		ActiveRequests: len(l.requests), Admitted: l.admitted, Rejected: l.rejected,
 		RateRejected: l.rateRejected, BusyRejected: l.busyRejected, Defaults: l.cfg.limits,
-		Scope: scopeSnapshot{AllCredentials: len(l.cfg.AuthIndexes) == 0, SelectedCount: len(l.cfg.AuthIndexes), GroupCount: len(groups), OverrideCount: len(l.cfg.AccountLimits)},
-		Items: make([]accountSnapshot, 0, len(l.accounts)),
+		AccountDisplay: l.cfg.AccountDisplay,
+		Scope:          scopeSnapshot{AllCredentials: len(l.cfg.AuthIndexes) == 0, SelectedCount: len(l.cfg.AuthIndexes), GroupCount: len(groups), OverrideCount: len(l.cfg.AccountLimits)},
+		Items:          make([]accountSnapshot, 0, len(l.accounts)),
 	}
 	for key, account := range l.accounts {
 		result.ActiveSlots += account.active
@@ -354,6 +360,9 @@ func (l *limiter) snapshot() snapshot {
 			RateRetryAfter: retrySeconds(account.history.retryAfter(now, policy.RequestsPerMinute)),
 			Admitted:       account.admitted, RateRejected: account.rateRejected, ConcurrencyRejected: account.concurrencyRejected,
 		})
+		for identity := range account.aliases {
+			result.Items[len(result.Items)-1].identities = append(result.Items[len(result.Items)-1].identities, identity)
+		}
 	}
 	sort.Slice(result.Items, func(i, j int) bool { return result.Items[i].Account < result.Items[j].Account })
 	return result

@@ -37,7 +37,7 @@ just because 60 seconds elapsed.
 
 ## Configuration
 
-Configure all five fields in **CPA → Plugins → cpa-plugin-limit → Configuration**.
+Configure all six fields in **CPA → Plugins → cpa-plugin-limit → Configuration**.
 The plugin declares numeric, JSON-array, and JSON-object editors with defaults and
 Chinese field descriptions. Saving uses CPA's existing plugin reconfiguration;
 manual YAML editing is optional. Clearing a field restores its default.
@@ -63,16 +63,21 @@ plugins:
       auth_indexes: []
       account_groups: {}
       account_limits: {}
+      account_display: masked_email
 
 routing:
   session-affinity: true
   session-affinity-ttl: "1h"
 ```
 
-The five plugin fields are declared for CPA's visual plugin configuration editor.
+The six plugin fields are declared for CPA's visual plugin configuration editor.
 Numeric limits must be integers in `0..10000`; **0 disables that dimension**.
 Omitted fields use defaults; omitted per-account fields inherit global values.
 Standard host fields such as `enabled`, `priority`, and `store` are accepted.
+
+`account_display` selects `masked_email` (default), `email`, or `fingerprint` in
+the configuration editor. Missing email addresses always fall back to the
+fingerprint. Display settings do not change account identity or admission limits.
 
 To restrict only Codex credentials, list their indexes in `auth_indexes`. The
 plugin does not infer providers from model names or protocol formats, since
@@ -130,16 +135,26 @@ It refreshes every five seconds by default; select manual, 10-second, or 30-seco
 refresh instead. Polling pauses while hidden; failures keep the last snapshot and
 show a stale-data warning.
 
+Email labels come from the host's `host.auth.list` callback and only its explicit
+email field. File names, account strings, and labels are never treated as email
+addresses. Lookups are cached for 30 seconds and run only during monitoring;
+admission never waits for them. Aliases and observed group members deduplicate
+email labels. Credentials with matching emails retain separate limit buckets.
+Unsupported or failed callbacks fall back to fingerprints.
+
 These modern resource routes are **not management-authenticated by CPA**. They
-expose only counters, thresholds, timestamps, and 16-character SHA-256 account
-fingerprints; never raw credential indexes, IDs, group names, client keys, session
-IDs, request IDs, headers, or bodies. Restrict resource access at your gateway if
-operational counters are private. No deprecated `/v0/management` routes are added.
+expose counters, thresholds, timestamps, 16-character SHA-256 fingerprints, and
+masked email labels by default. **Selecting `account_display: email` also exposes
+full email addresses through the public status endpoint; restrict resource access
+at your gateway before enabling it.** Credential indexes, IDs, group names,
+client keys, session IDs, request IDs, headers, and bodies are never returned.
+No deprecated `/v0/management` routes are added.
 
 `status` returns `version`, `observed_at`, `quiescing`, `active_requests`,
 `active_slots`, `window_requests`, lifetime `admitted`/`rejected` attempt counters,
 `rate_rejected`, `concurrency_rejected`, effective `defaults`, redacted `scope`
-counts, and `items`. Each item contains `account`,
+counts, `account_display`, `email_lookup_available`, and `items`. Each item contains
+`account` (always a fingerprint), an optional `label` (email display),
 `active`, `window_requests`, configured limits, `rate_retry_after_seconds`, and
 admitted/rate-rejected/concurrency-rejected counters. Idle buckets disappear once
 their history expires, so per-account counters then reset. `window_requests` is

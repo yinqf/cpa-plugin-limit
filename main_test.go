@@ -45,7 +45,7 @@ func TestRegistrationAndVisualConfigurationContract(t *testing.T) {
 	for _, field := range reg.Metadata.ConfigFields {
 		fields[field.Name] = true
 	}
-	for _, key := range []string{"requests_per_minute", "max_concurrency", "auth_indexes", "account_groups", "account_limits"} {
+	for _, key := range []string{"requests_per_minute", "max_concurrency", "auth_indexes", "account_groups", "account_limits", "account_display"} {
 		if !fields[key] {
 			t.Fatalf("missing visual field %s", key)
 		}
@@ -67,7 +67,7 @@ func TestRegistrationAndVisualConfigurationContract(t *testing.T) {
 	if err := json.Unmarshal(encoded, &wire); err != nil {
 		t.Fatal(err)
 	}
-	wantDefaults := map[string]string{"requests_per_minute": "5", "max_concurrency": "1", "auth_indexes": "[]", "account_groups": "{}", "account_limits": "{}"}
+	wantDefaults := map[string]string{"requests_per_minute": "5", "max_concurrency": "1", "auth_indexes": "[]", "account_groups": "{}", "account_limits": "{}", "account_display": `"masked_email"`}
 	if wire.Metadata.Name != pluginName || len(wire.Metadata.ConfigFields) != len(wantDefaults) {
 		t.Fatalf("metadata fields were lost on the wire: %s", encoded)
 	}
@@ -84,8 +84,8 @@ func TestRegistrationAndVisualConfigurationContract(t *testing.T) {
 
 func TestVisualEditorBlankValuesRestoreDefaults(t *testing.T) {
 	l, _ := testLimiter()
-	call[registration](t, l, pluginabi.MethodPluginReconfigure, registerRequest{SchemaVersion: 6, ConfigYAML: []byte("requests_per_minute: 9\nmax_concurrency: 3\nauth_indexes: [a]\naccount_groups: {a: shared}\naccount_limits: {shared: {max_concurrency: 2}}")})
-	call[registration](t, l, pluginabi.MethodPluginReconfigure, registerRequest{SchemaVersion: 6, ConfigYAML: []byte("requests_per_minute: null\nmax_concurrency: null\nauth_indexes: null\naccount_groups: null\naccount_limits: null\n")})
+	call[registration](t, l, pluginabi.MethodPluginReconfigure, registerRequest{SchemaVersion: 6, ConfigYAML: []byte("requests_per_minute: 9\nmax_concurrency: 3\nauth_indexes: [a]\naccount_groups: {a: shared}\naccount_limits: {shared: {max_concurrency: 2}}\naccount_display: email")})
+	call[registration](t, l, pluginabi.MethodPluginReconfigure, registerRequest{SchemaVersion: 6, ConfigYAML: []byte("requests_per_minute: null\nmax_concurrency: null\nauth_indexes: null\naccount_groups: null\naccount_limits: null\naccount_display: null\n")})
 	if !reflect.DeepEqual(l.cfg, defaultConfig()) {
 		t.Fatalf("clearing fields in the visual editor did not restore defaults: %+v", l.cfg)
 	}
@@ -140,6 +140,7 @@ func TestInvalidConfigurationDoesNotReplaceActiveSettings(t *testing.T) {
 		"account_groups: {a: ''}", "account_limits: {'': {max_concurrency: 1}}", "requests_per_minute: invalid",
 		"defaults: &limits {max_concurrency: 1.5}\n<<: *limits",
 		"account_limits: {a: {requests_per_minute: 1.5}}",
+		"account_display: invalid", "account_display: [email]",
 	} {
 		t.Run(cfg, func(t *testing.T) {
 			raw, _ := json.Marshal(registerRequest{SchemaVersion: 6, ConfigYAML: []byte(cfg)})

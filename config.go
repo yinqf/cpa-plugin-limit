@@ -10,6 +10,12 @@ import (
 
 const maxLimit = 10000
 
+const (
+	displayFingerprint = "fingerprint"
+	displayMaskedEmail = "masked_email"
+	displayEmail       = "email"
+)
+
 type limits struct {
 	RequestsPerMinute int `yaml:"requests_per_minute" json:"requests_per_minute"`
 	MaxConcurrency    int `yaml:"max_concurrency" json:"max_concurrency"`
@@ -21,10 +27,11 @@ type limitOverride struct {
 }
 
 type config struct {
-	limits        `yaml:",inline"`
-	AuthIndexes   []string                 `yaml:"auth_indexes" json:"auth_indexes"`
-	AccountGroups map[string]string        `yaml:"account_groups" json:"account_groups"`
-	AccountLimits map[string]limitOverride `yaml:"account_limits" json:"account_limits"`
+	limits         `yaml:",inline"`
+	AuthIndexes    []string                 `yaml:"auth_indexes" json:"auth_indexes"`
+	AccountGroups  map[string]string        `yaml:"account_groups" json:"account_groups"`
+	AccountLimits  map[string]limitOverride `yaml:"account_limits" json:"account_limits"`
+	AccountDisplay string                   `yaml:"account_display" json:"account_display"`
 }
 
 type registerRequest struct {
@@ -33,7 +40,7 @@ type registerRequest struct {
 }
 
 func defaultConfig() config {
-	return config{limits: limits{RequestsPerMinute: 5, MaxConcurrency: 1}}
+	return config{limits: limits{RequestsPerMinute: 5, MaxConcurrency: 1}, AccountDisplay: displayMaskedEmail}
 }
 
 func parseConfig(raw []byte) (config, error) {
@@ -60,6 +67,15 @@ func parseConfig(raw []byte) (config, error) {
 	}
 	if err := cfg.limits.validate(); err != nil {
 		return config{}, err
+	}
+	cfg.AccountDisplay = strings.TrimSpace(cfg.AccountDisplay)
+	if cfg.AccountDisplay == "" {
+		cfg.AccountDisplay = displayMaskedEmail
+	}
+	switch cfg.AccountDisplay {
+	case displayFingerprint, displayMaskedEmail, displayEmail:
+	default:
+		return config{}, fmt.Errorf("account_display must be fingerprint, masked_email, or email")
 	}
 	seen := make(map[string]bool)
 	for i, value := range cfg.AuthIndexes {

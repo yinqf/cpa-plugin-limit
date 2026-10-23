@@ -26,7 +26,7 @@ func (l *limiter) management(raw []byte) ([]byte, error) {
 	case "/ui":
 		return resourceResponse(http.StatusOK, "text/html; charset=utf-8", statusPage)
 	case "/status":
-		body, err := json.Marshal(l.snapshot())
+		body, err := json.Marshal(l.monitorSnapshot())
 		if err != nil {
 			return nil, err
 		}

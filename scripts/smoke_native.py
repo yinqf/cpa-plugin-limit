@@ -17,6 +17,10 @@ CALL = ctypes.CFUNCTYPE(
     ctypes.POINTER(Buffer),
 )
 FREE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_size_t)
+HOST_CALL = ctypes.CFUNCTYPE(
+    ctypes.c_int, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p,
+    ctypes.c_size_t, ctypes.POINTER(Buffer),
+)
 SHUTDOWN = ctypes.CFUNCTYPE(None)
 
 
@@ -24,6 +28,13 @@ class PluginAPI(ctypes.Structure):
     _fields_ = [
         ("abi_version", ctypes.c_uint32), ("call", CALL),
         ("free_buffer", FREE), ("shutdown", SHUTDOWN),
+    ]
+
+
+class HostAPI(ctypes.Structure):
+    _fields_ = [
+        ("abi_version", ctypes.c_uint32), ("host_ctx", ctypes.c_void_p),
+        ("call", HOST_CALL), ("free_buffer", FREE),
     ]
 
 
@@ -59,6 +70,36 @@ def main():
     assert fields["auth_indexes"]["Default"] == []
     assert fields["account_groups"]["Default"] == {}
     assert fields["account_limits"]["Default"] == {}
+    assert fields["account_display"]["Default"] == "masked_email"
+    assert fields["account_display"]["Type"] == "enum"
+
+    host_buffers = {}
+    host_calls = []
+
+    @HOST_CALL
+    def host_call(ctx, method, request, length, output):
+        assert ctx == 123
+        assert method == b"host.auth.list"
+        assert json.loads(ctypes.string_at(request, length)) == {}
+        host_calls.append(method)
+        response = json.dumps({"ok": True, "result": {"files": [
+            {"auth_index": "dummy-account", "email": "alice@example.com",
+             "account": "private-credential-secret", "label": "private-label"},
+            {"auth_index": "another-dummy-account", "email": "bob@example.com"},
+        ]}}).encode()
+        buffer = ctypes.create_string_buffer(response)
+        pointer = ctypes.addressof(buffer)
+        host_buffers[pointer] = buffer
+        output[0] = Buffer(pointer, len(response))
+        return 0
+
+    @FREE
+    def host_free(pointer, length):
+        assert pointer in host_buffers and length > 0
+        del host_buffers[pointer]
+
+    host = HostAPI(1, 123, host_call, host_free)
+    assert library.cliproxy_plugin_init(ctypes.byref(host), ctypes.byref(api)) == 0
 
     def before(request_id):
         result = call("request.intercept_before", {"RequestID": request_id})
@@ -98,6 +139,7 @@ def main():
     before("isolated")
     assert not after("isolated", "another-dummy-account")["Terminate"]
     complete("isolated")
+    assert not host_calls, "email lookup ran on the admission path"
     resource = call("management.handle", {"Method": "GET", "Path": "/status"})
     status = json.loads(base64.b64decode(resource["Body"]))
     assert status["admitted"] == 6 and status["rejected"] == 2
@@ -107,10 +149,33 @@ def main():
     assert status["defaults"] == {"requests_per_minute": 5, "max_concurrency": 1}
     assert status["scope"]["all_credentials"]
     assert "dummy-account" not in json.dumps(status)
+    assert status["account_display"] == "masked_email"
+    assert status["email_lookup_available"]
+    assert {row["label"] for row in status["items"]} == {"al***@example.com", "bo***@example.com"}
+    assert "alice@example.com" not in json.dumps(status)
+    assert "private-" not in json.dumps(status)
+    assert len(host_calls) == 1 and not host_buffers, "host callback buffers leaked"
+    for mode in ["email", "fingerprint"]:
+        call("plugin.reconfigure", {"schema_version": 6, "config_yaml": base64.b64encode(f"account_display: {mode}".encode()).decode()})
+        resource = call("management.handle", {"Method": "GET", "Path": "/status"})
+        displayed = json.loads(base64.b64decode(resource["Body"]))
+        assert displayed["admitted"] == 6 and displayed["rejected"] == 2
+        if mode == "email":
+            assert {row["label"] for row in displayed["items"]} == {"alice@example.com", "bob@example.com"}
+        else:
+            assert all("label" not in row for row in displayed["items"])
+    assert len(host_calls) == 1 and not host_buffers
+    assert library.cliproxy_plugin_init(None, ctypes.byref(api)) == 0
+    call("plugin.reconfigure", {"schema_version": 6})
+    fallback_resource = call("management.handle", {"Method": "GET", "Path": "/status"})
+    fallback = json.loads(base64.b64decode(fallback_resource["Body"]))
+    assert not fallback["email_lookup_available"]
+    assert all("label" not in row for row in fallback["items"])
+    assert fallback["admitted"] == 6 and fallback["rejected"] == 2
     call("plugin.quiesce", {})
     assert call("request.intercept_before", {"RequestID": "stopped"})["StatusCode"] == 503
     api.shutdown()
-    print("Native ABI smoke passed: registration, account isolation, concurrency, RPM, release, status, shutdown")
+    print("Native ABI smoke passed: registration, account isolation, concurrency, RPM, release, host email callbacks, redaction, shutdown")
 
 
 if __name__ == "__main__":
