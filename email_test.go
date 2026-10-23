@@ -83,7 +83,7 @@ func TestEmailLabelsFollowAliasesAndGroupsWithoutMergingAccounts(t *testing.T) {
 	for _, row := range result.Items {
 		labels[row.Label]++
 	}
-	if len(result.Items) != 4 || result.ActiveSlots != 4 || labels["sa***@example.com"] != 2 || labels["ru***@example.com"] != 1 || labels[""] != 1 {
+	if result.AccountDisplay != displayEmail || len(result.Items) != 4 || result.ActiveSlots != 4 || labels["same@example.com"] != 2 || labels["runtime@example.com"] != 1 || labels[""] != 1 {
 		t.Fatalf("email identity changed grouping or missing-email fallback: %+v", result)
 	}
 	if label := emailLabel([]string{"index:a", "index:b"}, map[string]string{"index:a": "a@example.com", "index:b": "b@example.com"}, displayEmail); label != "a@example.com、b@example.com" {
@@ -107,7 +107,7 @@ func TestEmailCacheRefreshFailureAndAmbiguousIdentityFallback(t *testing.T) {
 	})
 	first := l.monitorSnapshot()
 	if first.EmailAvailable || first.Items[0].Label != "" {
-		t.Fatal("lookup failure did not fall back to the fingerprint")
+		t.Fatal("lookup failure returned an email label")
 	}
 	*now = now.Add(emailCacheTTL - time.Nanosecond)
 	l.monitorSnapshot()
@@ -116,7 +116,7 @@ func TestEmailCacheRefreshFailureAndAmbiguousIdentityFallback(t *testing.T) {
 	}
 	*now = now.Add(time.Nanosecond)
 	second := l.monitorSnapshot()
-	if !second.EmailAvailable || second.Items[0].Label != "fi***@example.com" {
+	if !second.EmailAvailable || second.Items[0].Label != "first@example.com" {
 		t.Fatalf("cache did not retry after expiry: %+v", second)
 	}
 	*now = now.Add(emailCacheTTL)

@@ -202,8 +202,7 @@
     .empty { text-align: center; padding: 48px 24px; color: var(--limit-muted); white-space: normal; }
     .error { color: var(--limit-bad); background: var(--limit-bad-bg); border: 1px solid var(--limit-bad-border); padding: 16px; border-radius: 8px; margin-bottom: 24px; }
     .email-notice { color: var(--limit-warn); background: var(--limit-warn-bg); border: 1px solid var(--limit-warn-border); padding: 12px 16px; border-radius: 8px; margin-bottom: 24px; font-size: 13px; }
-    .account-email { display: block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
-    .account-fingerprint { display: block; margin-top: 4px; color: var(--limit-muted); font-size: 11px; }
+    .account-email { display: block; min-width: 180px; max-width: 320px; white-space: normal; overflow-wrap: anywhere; font-weight: 600; }
     .footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; color: var(--limit-muted); font-size: 12px; }
     details { margin-top: 16px; color: var(--limit-muted); font-size: 12px; }
     summary { cursor: pointer; width: fit-content; }
@@ -286,14 +285,14 @@
     </details>
   </section>
   <section class="panel" aria-labelledby="accounts-heading">
-    <div class="panel-heading"><h2 id="accounts-heading">账户明细 <span id="account-count" class="muted"></span></h2><small id="account-display-hint">优先显示脱敏邮箱，无邮箱时显示指纹</small></div>
+    <div class="panel-heading"><h2 id="accounts-heading">账户明细 <span id="account-count" class="muted"></span></h2><small id="account-display-hint">显示完整邮箱</small></div>
     <div class="scroll" role="region" aria-label="账户限流明细，可左右滚动" tabindex="0"><table>
       <thead><tr><th>账户</th><th>当前状态</th><th>并发占用 / 上限</th><th>60 秒请求 / 上限</th><th>限频恢复</th><th>累计放行</th><th>拒绝：限频 / 并发</th></tr></thead>
       <tbody id="rows"><tr><td colspan="7" class="empty">正在读取账户状态…</td></tr></tbody>
     </table></div>
   </section>
   <div class="footer"><span id="observed" role="status">等待首次刷新</span><span id="version">cpa-plugin-limit</span></div>
-  <details><summary>统计口径与覆盖范围</summary><p>空闲账户在最近一分钟记录过期后从明细移除，账户累计统计随之清零，全局累计统计保留到插件重启。并发名额等待宿主完成通知释放；故障转移可能保守占用多个账户名额。邮箱从宿主账户目录读取，最多缓存 30 秒，默认脱敏；可在插件配置的 account_display 中选择 masked_email、email 或 fingerprint。监控不展示凭据密钥、会话或请求内容。双向 WebSocket 后续轮次与部分内部重发需要宿主钩子支持；多实例之间不共享计数。</p></details>
+  <details><summary>统计口径与覆盖范围</summary><p>空闲账户在最近一分钟记录过期后从明细移除，账户累计统计随之清零，全局累计统计保留到插件重启。并发名额等待宿主完成通知释放；故障转移可能保守占用多个账户名额。邮箱从宿主账户目录读取，最多缓存 30 秒，默认显示完整邮箱，不附带指纹；无邮箱时显示未提供邮箱，查询失败时显示邮箱读取失败。可在插件配置的 account_display 中选择 email、masked_email 或 fingerprint。监控不展示凭据密钥、会话或请求内容。双向 WebSocket 后续轮次与部分内部重发需要宿主钩子支持；多实例之间不共享计数。</p></details>
 </main>
 <script>
   const button = document.getElementById('refresh');
@@ -344,16 +343,18 @@
     health.className = 'badge ' + (state.quiescing ? 'warn' : 'good');
     setText('account-count', '（' + state.items.length + '）');
     document.getElementById('email-notice').hidden = state.account_display !== 'email';
-    setText('account-display-hint', state.account_display === 'fingerprint' ? '以脱敏指纹标识账户或合并分组' : state.items.length && !state.email_lookup_available ? '暂未取得账户邮箱，使用指纹显示' : state.account_display === 'email' ? '显示完整邮箱，无邮箱时显示指纹' : '邮箱已脱敏，无邮箱时显示指纹');
+    setText('account-display-hint', state.account_display === 'fingerprint' ? '以脱敏指纹标识账户或合并分组' : state.items.length && !state.email_lookup_available ? '暂未取得账户邮箱' : state.account_display === 'email' ? '显示完整邮箱' : '邮箱已脱敏');
     const rows = state.items.map(item => {
       const row = element('tr');
       const identity = element('td');
       if (item.label) {
         const label = element('span', item.label, 'account-email');
         label.title = item.label;
-        identity.append(label, element('code', item.account, 'account-fingerprint'));
-      } else {
+        identity.append(label);
+      } else if (state.account_display === 'fingerprint') {
         identity.append(element('code', item.account));
+      } else {
+        identity.append(element('span', state.email_lookup_available ? '未提供邮箱' : '邮箱读取失败', 'muted'));
       }
       const rateFull = item.requests_per_minute > 0 && item.window_requests >= item.requests_per_minute;
       const busy = item.max_concurrency > 0 && item.active >= item.max_concurrency;

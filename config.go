@@ -40,7 +40,7 @@ type registerRequest struct {
 }
 
 func defaultConfig() config {
-	return config{limits: limits{RequestsPerMinute: 5, MaxConcurrency: 1}, AccountDisplay: displayMaskedEmail}
+	return config{limits: limits{RequestsPerMinute: 5, MaxConcurrency: 1}, AccountDisplay: displayEmail}
 }
 
 func parseConfig(raw []byte) (config, error) {
@@ -70,7 +70,7 @@ func parseConfig(raw []byte) (config, error) {
 	}
 	cfg.AccountDisplay = strings.TrimSpace(cfg.AccountDisplay)
 	if cfg.AccountDisplay == "" {
-		cfg.AccountDisplay = displayMaskedEmail
+		cfg.AccountDisplay = displayEmail
 	}
 	switch cfg.AccountDisplay {
 	case displayFingerprint, displayMaskedEmail, displayEmail:

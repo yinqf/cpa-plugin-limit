@@ -63,7 +63,7 @@ plugins:
       auth_indexes: []
       account_groups: {}
       account_limits: {}
-      account_display: masked_email
+      account_display: email
 
 routing:
   session-affinity: true
@@ -75,9 +75,11 @@ Numeric limits must be integers in `0..10000`; **0 disables that dimension**.
 Omitted fields use defaults; omitted per-account fields inherit global values.
 Standard host fields such as `enabled`, `priority`, and `store` are accepted.
 
-`account_display` selects `masked_email` (default), `email`, or `fingerprint` in
-the configuration editor. Missing email addresses always fall back to the
-fingerprint. Display settings do not change account identity or admission limits.
+`account_display` selects `email` (default), `masked_email`, or `fingerprint` in
+the configuration editor. Email modes show only the email without a fingerprint;
+missing addresses and failed lookups have explicit placeholders. Long addresses
+wrap so the full email remains visible. Display settings do not change account
+identity or admission limits.
 
 To restrict only Codex credentials, list their indexes in `auth_indexes`. The
 plugin does not infer providers from model names or protocol formats, since
@@ -140,13 +142,14 @@ email field. File names, account strings, and labels are never treated as email
 addresses. Lookups are cached for 30 seconds and run only during monitoring;
 admission never waits for them. Aliases and observed group members deduplicate
 email labels. Credentials with matching emails retain separate limit buckets.
-Unsupported or failed callbacks fall back to fingerprints.
+Unsupported or failed callbacks display an email lookup failure placeholder.
 
 These modern resource routes are **not management-authenticated by CPA**. They
 expose counters, thresholds, timestamps, 16-character SHA-256 fingerprints, and
-masked email labels by default. **Selecting `account_display: email` also exposes
-full email addresses through the public status endpoint; restrict resource access
-at your gateway before enabling it.** Credential indexes, IDs, group names,
+full email labels by default. **Restrict resource access at your gateway because
+full email addresses are returned through the public status endpoint.** The
+fingerprint is retained in the API for correlation and is not shown in email modes.
+Credential indexes, IDs, group names,
 client keys, session IDs, request IDs, headers, and bodies are never returned.
 No deprecated `/v0/management` routes are added.
 

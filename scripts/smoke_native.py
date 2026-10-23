@@ -70,7 +70,7 @@ def main():
     assert fields["auth_indexes"]["Default"] == []
     assert fields["account_groups"]["Default"] == {}
     assert fields["account_limits"]["Default"] == {}
-    assert fields["account_display"]["Default"] == "masked_email"
+    assert fields["account_display"]["Default"] == "email"
     assert fields["account_display"]["Type"] == "enum"
 
     host_buffers = {}
@@ -149,19 +149,19 @@ def main():
     assert status["defaults"] == {"requests_per_minute": 5, "max_concurrency": 1}
     assert status["scope"]["all_credentials"]
     assert "dummy-account" not in json.dumps(status)
-    assert status["account_display"] == "masked_email"
+    assert status["account_display"] == "email"
     assert status["email_lookup_available"]
-    assert {row["label"] for row in status["items"]} == {"al***@example.com", "bo***@example.com"}
-    assert "alice@example.com" not in json.dumps(status)
+    assert {row["label"] for row in status["items"]} == {"alice@example.com", "bob@example.com"}
     assert "private-" not in json.dumps(status)
     assert len(host_calls) == 1 and not host_buffers, "host callback buffers leaked"
-    for mode in ["email", "fingerprint"]:
+    for mode in ["masked_email", "fingerprint"]:
         call("plugin.reconfigure", {"schema_version": 6, "config_yaml": base64.b64encode(f"account_display: {mode}".encode()).decode()})
         resource = call("management.handle", {"Method": "GET", "Path": "/status"})
         displayed = json.loads(base64.b64decode(resource["Body"]))
         assert displayed["admitted"] == 6 and displayed["rejected"] == 2
-        if mode == "email":
-            assert {row["label"] for row in displayed["items"]} == {"alice@example.com", "bob@example.com"}
+        if mode == "masked_email":
+            assert {row["label"] for row in displayed["items"]} == {"al***@example.com", "bo***@example.com"}
+            assert "alice@example.com" not in json.dumps(displayed)
         else:
             assert all("label" not in row for row in displayed["items"])
     assert len(host_calls) == 1 and not host_buffers
