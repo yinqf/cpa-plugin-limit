@@ -34,6 +34,10 @@
     .policy strong { margin-left: 8px; font-weight: 600; color: var(--text); }
     .config-guide { padding: 0 20px 18px; color: var(--muted); font-size: 13px; }
     .config-guide strong { color: var(--text); }
+    .config-examples { margin-top: 0; padding: 0 20px 18px; }
+    .config-examples summary { color: var(--accent); font-size: 13px; }
+    .config-examples p { margin-top: 14px; }
+    pre { margin: 8px 0 0; padding: 12px 14px; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); }
     .scroll { overflow-x: auto; }
     table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
     th, td { padding: 14px 20px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
@@ -94,6 +98,24 @@
       <span class="muted">账户分组 / 单独配置<strong id="overrides">—</strong></span>
     </div>
     <p class="config-guide">在 CPA <strong>插件管理 → cpa-plugin-limit → 配置</strong> 中编辑全部参数，保存后生效。单账户配置会覆盖全局阈值；数值为 0 表示关闭对应限制。</p>
+    <details class="config-examples">
+      <summary>配置填写示例</summary>
+      <p>将对应 JSON 复制到配置编辑器的同名输入框，再将示例凭据索引替换为实际值。以下三个示例可以配合使用。</p>
+      <p><code>auth_indexes</code>：仅限制指定的凭据。留空或填写 <code>[]</code> 会限制所有供应商凭据。</p>
+      <pre><code>["codex-index-a", "codex-index-b"]</code></pre>
+      <p><code>account_groups</code>：将同一真实账户的多份凭据合并计数。留空或填写 <code>{}</code> 不合并。</p>
+      <pre><code>{
+  "codex-index-a": "codex-shared",
+  "codex-index-b": "codex-shared"
+}</code></pre>
+      <p><code>account_limits</code>：为上述分组设置每分钟 5 次、并发 2。未填写的字段继承全局阈值；留空或填写 <code>{}</code> 使用全局配置。</p>
+      <pre><code>{
+  "codex-shared": {
+    "requests_per_minute": 5,
+    "max_concurrency": 2
+  }
+}</code></pre>
+    </details>
   </section>
   <section class="panel" aria-labelledby="accounts-heading">
     <div class="panel-heading"><h2 id="accounts-heading">账户明细 <span id="account-count" class="muted"></span></h2><small>以脱敏指纹标识账户或合并分组</small></div>

@@ -42,6 +42,10 @@ The plugin declares numeric, JSON-array, and JSON-object editors with defaults a
 Chinese field descriptions. Saving uses CPA's existing plugin reconfiguration;
 manual YAML editing is optional. Clearing a field restores its default.
 
+Copyable JSON examples are available under **配置填写示例** on the plugin's
+monitoring page. Configuration field descriptions use plain-text instructions
+so the host's HTML sanitization does not expose encoded quotation marks.
+
 Requires a plugin-enabled CPA build with RPC schema **2+**, request termination,
 and lifecycle completion. The SDK dependency matches the reference plugin
 (`v7.3.4`); native ABI 1 and the schema-2 contract also work with the current v8 host.
