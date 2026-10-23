@@ -9,6 +9,10 @@ on:
         description: Existing version tag to build and publish
         required: true
         type: string
+      publish:
+        description: Publish the package to GitHub Releases
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -18,16 +22,17 @@ jobs:
     name: Build and release linux/amd64
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.release_tag || github.ref }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
       - run: go vet ./...
       - run: go test -race ./...
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
       - name: Build, verify, and package
@@ -54,7 +59,9 @@ jobs:
       - name: Generate checksums
         working-directory: dist
         run: sha256sum cpa-plugin-limit_*.zip > checksums.txt
-      - uses: softprops/action-gh-release@v2
+      - name: Publish release
+        if: github.event_name != 'workflow_dispatch' || inputs.publish
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
           draft: false
