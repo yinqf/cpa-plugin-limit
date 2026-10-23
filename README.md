@@ -192,13 +192,22 @@ counts, `account_display`, `email_lookup_available`, `routing_mode`,
 `pending_attempts`, and `items`. Each item contains
 `account` (always a fingerprint), an optional `label` (email display),
 `active`, `window_requests`, configured limits, `rate_retry_after_seconds`, and
-admitted/rate-rejected/concurrency-rejected counters. Idle buckets disappear once
-their history expires, so per-account counters then reset. `window_requests` is
+admitted/rate-rejected/concurrency-rejected counters. Account rows and all three
+per-account counters remain after idle periods and rolling-window expiry, and
+continue accumulating when the same bucket receives traffic again. Global and
+per-account totals reset only when CPA restarts or the plugin is reloaded;
+configuration updates and monitoring refreshes preserve them. Changing identity
+groups retains the old buckets' historical totals and counts new groups separately.
+`window_requests` is
 capped at 10000 while RPM is disabled. The concurrency retry hint is one second;
 the actual release time depends on the running request.
 
-State is bounded to 4096 accounts and 16384 active request trackers and session bindings, plus 16384
-recent completion IDs. Exhaustion or missing required host identity returns **503**
+Enforcement state is bounded to 4096 live/recent account buckets and 16384 active
+request trackers and session bindings, plus 16384 recent completion IDs. Idle
+enforcement buckets and aliases are reclaimed after their 60-second history expires.
+Historical counters and email lookup identities remain in memory for each observed
+account bucket until restart or plugin reload; they do not occupy enforcement slots.
+Exhaustion or missing required host identity returns **503**
 instead of silently bypassing protection. Completion is asynchronous in CPA, so a
 recently finished request may briefly retain its slot until notification arrives.
 

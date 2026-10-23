@@ -302,6 +302,9 @@ func TestGroupingChangesMustDrainButThresholdReloadKeepsHistory(t *testing.T) {
 	*now = now.Add(60 * time.Second)
 	configure(t, l, cfg)
 	admit(t, l, "after-drain", "account")
+	if result := l.snapshot(); len(result.Items) != 2 || result.Admitted != 6 {
+		t.Fatalf("changing groups erased historical totals: %+v", result)
+	}
 	*now = now.Add(time.Hour)
 	if err := l.configure(defaultConfig()); err == nil {
 		t.Fatal("group change discarded a long-running request")
@@ -350,8 +353,80 @@ func TestActiveRequestsNeverExpireWithTheRateWindow(t *testing.T) {
 	}
 	l.complete("next")
 	*now = now.Add(time.Minute)
-	if len(l.snapshot().Items) != 0 || len(l.aliases) != 0 {
-		t.Fatal("idle account or identity mappings were not evicted")
+	result := l.snapshot()
+	if len(l.accounts) != 0 || len(l.aliases) != 0 {
+		t.Fatal("idle enforcement state or identity mappings were not evicted")
+	}
+	if len(result.Items) != 1 || result.Items[0].Admitted != 2 || result.Items[0].ConcurrencyRejected != 1 || result.Items[0].Active != 0 || result.Items[0].WindowRequests != 0 {
+		t.Fatalf("idle account lost cumulative counters: %+v", result)
+	}
+}
+
+func TestAccountTotalsSurviveIdleWindowsAndReconfigurationUntilRestart(t *testing.T) {
+	l, now := testLimiter()
+	cfg := defaultConfig()
+	cfg.RequestsPerMinute = 2
+	configure(t, l, cfg)
+	var fingerprint string
+	for cycle := 1; cycle <= 3; cycle++ {
+		first, busy, second, rate := fmt.Sprintf("first-%d", cycle), fmt.Sprintf("busy-%d", cycle), fmt.Sprintf("second-%d", cycle), fmt.Sprintf("rate-%d", cycle)
+		admit(t, l, first, "account")
+		begin(t, l, busy)
+		if result := l.admit(busy, "account", ""); result.code != "account_concurrency_exceeded" {
+			t.Fatalf("cumulative totals changed concurrency protection: %+v", result)
+		}
+		l.complete(busy)
+		l.complete(first)
+		admit(t, l, second, "account")
+		l.complete(second)
+		begin(t, l, rate)
+		if result := l.admit(rate, "account", ""); result.code != "account_rate_limit_exceeded" {
+			t.Fatalf("cumulative totals changed rate protection: %+v", result)
+		}
+		l.complete(rate)
+		*now = now.Add(time.Minute)
+		// Reconfiguration and repeated reads must not reset archived counters.
+		cfg.AccountDisplay = displayMaskedEmail
+		configure(t, l, cfg)
+		l.snapshot()
+		result := l.snapshot()
+		if len(result.Items) != 1 {
+			t.Fatalf("idle account disappeared: %+v", result)
+		}
+		row := result.Items[0]
+		if cycle == 1 {
+			fingerprint = row.Account
+		}
+		if row.Account != fingerprint || row.Admitted != uint64(2*cycle) || row.RateRejected != uint64(cycle) || row.ConcurrencyRejected != uint64(cycle) || row.Active != 0 || row.WindowRequests != 0 || row.RateRetryAfter != 0 {
+			t.Fatalf("counters reset or expired quota remained in cycle %d: %+v", cycle, row)
+		}
+		if result.Admitted != row.Admitted || result.RateRejected != row.RateRejected || result.BusyRejected != row.ConcurrencyRejected || result.Rejected != row.RateRejected+row.ConcurrencyRejected {
+			t.Fatalf("account and global cumulative counters diverged: %+v", result)
+		}
+	}
+	restarted := newLimiter(l.now).snapshot()
+	if len(restarted.Items) != 0 || restarted.Admitted != 0 || restarted.Rejected != 0 || restarted.RateRejected != 0 || restarted.BusyRejected != 0 {
+		t.Fatalf("new plugin instance retained previous counters: %+v", restarted)
+	}
+}
+
+func TestHistoricalTotalsDoNotConsumeEnforcementCapacity(t *testing.T) {
+	l, now := testLimiter()
+	for i := 0; i < maxTrackedAccounts; i++ {
+		id := fmt.Sprint(i)
+		admit(t, l, id, id)
+		l.complete(id)
+	}
+	*now = now.Add(time.Minute)
+	if result := l.snapshot(); len(result.Items) != maxTrackedAccounts || len(l.accounts) != 0 {
+		t.Fatalf("idle buckets did not retain totals and release enforcement capacity: rows=%d, buckets=%d", len(result.Items), len(l.accounts))
+	}
+	admit(t, l, "new-account", "new-account")
+	l.complete("new-account")
+	admit(t, l, "returning-account", "0")
+	l.complete("returning-account")
+	if result := l.snapshot(); len(result.Items) != maxTrackedAccounts+1 || result.Admitted != maxTrackedAccounts+2 || l.totals["index:0"].admitted != 2 {
+		t.Fatal("historical counters blocked or reset new admissions")
 	}
 }
 

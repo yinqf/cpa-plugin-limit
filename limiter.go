@@ -56,16 +56,23 @@ func (h *history) retryAfter(now time.Time, limit int) time.Duration {
 	return h.times[len(h.times)-limit].Add(rateWindow).Sub(now)
 }
 
-type accountState struct {
+// Account totals outlive the rolling-window buckets and reset with the plugin.
+type accountTotals struct {
 	name                string
 	aliases             map[string]struct{}
-	history             history
-	active              int
 	admitted            uint64
 	rateRejected        uint64
 	concurrencyRejected uint64
-	pendingAttempts     int
-	pendingSlots        int
+}
+
+type accountState struct {
+	name            string
+	aliases         map[string]struct{}
+	history         history
+	active          int
+	pendingAttempts int
+	pendingSlots    int
+	totals          *accountTotals
 }
 
 type requestState struct {
@@ -92,6 +99,7 @@ type limiter struct {
 	cfg               config
 	quiescing         bool
 	accounts          map[string]*accountState
+	totals            map[string]*accountTotals
 	aliases           map[string]string
 	requests          map[string]*requestState
 	completed         map[string]*list.Element
@@ -111,6 +119,7 @@ type limiter struct {
 func newLimiter(now func() time.Time) *limiter {
 	return &limiter{
 		now: now, cfg: defaultConfig(), accounts: make(map[string]*accountState),
+		totals:  make(map[string]*accountTotals),
 		aliases: make(map[string]string), requests: make(map[string]*requestState),
 		completed: make(map[string]*list.Element), bindings: make(map[string]*list.Element),
 	}
@@ -178,26 +187,18 @@ func (l *limiter) admit(requestID, index, id string) decision {
 	if err != nil {
 		return unavailable("limiter_identity_conflict", "The host linked conflicting credential identities; drain these credentials before retrying.")
 	}
-	account := l.accounts[key]
 	if !l.included(index, id, key) {
 		return decision{}
 	}
+	account := l.trackAccount(key, name, identities)
 	if account == nil {
-		if len(l.accounts) >= maxTrackedAccounts {
-			return unavailable("limiter_capacity", "The account limiter has reached its account tracking capacity.")
-		}
-		account = &accountState{name: name, aliases: make(map[string]struct{})}
-		l.accounts[key] = account
-	}
-	for _, identity := range identities {
-		l.aliases[identity] = key
-		account.aliases[identity] = struct{}{}
+		return unavailable("limiter_capacity", "The account limiter has reached its account tracking capacity.")
 	}
 	account.history.prune(now)
 	policy := l.cfg.accountLimits(account.name)
 	_, reserved := req.accounts[key]
 	if !reserved && policy.MaxConcurrency > 0 && account.active+account.pendingSlots >= policy.MaxConcurrency {
-		account.concurrencyRejected++
+		account.totals.concurrencyRejected++
 		l.rejected++
 		l.busyRejected++
 		return decision{status: 429, code: "account_concurrency_exceeded", message: "The selected upstream account is busy; retry without changing the session.", retryAfter: time.Second}
@@ -206,19 +207,42 @@ func (l *limiter) admit(requestID, index, id string) decision {
 		if wait <= 0 {
 			wait = time.Second
 		}
-		account.rateRejected++
+		account.totals.rateRejected++
 		l.rejected++
 		l.rateRejected++
 		return decision{status: 429, code: "account_rate_limit_exceeded", message: "The selected upstream account has reached its rolling 60-second request limit.", retryAfter: wait}
 	}
 	account.history.add(now)
-	account.admitted++
+	account.totals.admitted++
 	l.admitted++
 	if !reserved {
 		req.accounts[key] = struct{}{}
 		account.active++
 	}
 	return decision{}
+}
+
+func (l *limiter) trackAccount(key, name string, identities []string) *accountState {
+	account := l.accounts[key]
+	if account == nil {
+		if len(l.accounts) >= maxTrackedAccounts {
+			return nil
+		}
+		totals := l.totals[key]
+		if totals == nil {
+			totals = &accountTotals{aliases: make(map[string]struct{})}
+			l.totals[key] = totals
+		}
+		account = &accountState{name: name, aliases: make(map[string]struct{}), totals: totals}
+		l.accounts[key] = account
+	}
+	account.totals.name = account.name
+	for _, identity := range identities {
+		l.aliases[identity] = key
+		account.aliases[identity] = struct{}{}
+		account.totals.aliases[identity] = struct{}{}
+	}
+	return account
 }
 
 // Prefer a stable index, but remember both identities so fallback-ID requests
@@ -256,6 +280,7 @@ func (l *limiter) identity(index, id string) (key, name string, identities []str
 	if existingKey != "" {
 		if index != "" && group == "" && len(existingKey) > 3 && existingKey[:3] == "id:" {
 			l.accounts[existingKey].name = index
+			l.accounts[existingKey].totals.name = index
 		}
 		return existingKey, l.accounts[existingKey].name, identities, nil
 	}
@@ -293,6 +318,10 @@ func (l *limiter) cleanup(now time.Time) {
 				delete(l.aliases, identity)
 			}
 			delete(l.accounts, key)
+			if account.totals.admitted == 0 && account.totals.rateRejected == 0 && account.totals.concurrencyRejected == 0 {
+				// A cancelled scheduler reservation never became a counted attempt.
+				delete(l.totals, key)
+			}
 		}
 	}
 	l.nextCleanup = now.Add(rateWindow)
@@ -364,7 +393,7 @@ func (l *limiter) snapshot() snapshot {
 		AccountDisplay: l.cfg.AccountDisplay,
 		RoutingMode:    l.cfg.RoutingMode, SessionAffinityTTL: l.cfg.SessionAffinityTTL,
 		Scope: scopeSnapshot{AllCredentials: len(l.cfg.AuthIndexes) == 0, SelectedCount: len(l.cfg.AuthIndexes), GroupCount: len(groups), OverrideCount: len(l.cfg.AccountLimits)},
-		Items: make([]accountSnapshot, 0, len(l.accounts)),
+		Items: make([]accountSnapshot, 0, len(l.totals)),
 	}
 	l.pruneBindings(now)
 	result.AffinitySessions = len(l.bindings)
@@ -372,21 +401,25 @@ func (l *limiter) snapshot() snapshot {
 		seen := l.schedulerLastSeen
 		result.SchedulerLastSeen = &seen
 	}
-	for key, account := range l.accounts {
-		result.ActiveSlots += account.active + account.pendingSlots
-		result.PendingAttempts += account.pendingAttempts
-		result.WindowRequests += account.history.count()
-		policy := l.cfg.accountLimits(account.name)
+	for key, totals := range l.totals {
+		policy := l.cfg.accountLimits(totals.name)
 		digest := sha256.Sum256([]byte(key))
-		result.Items = append(result.Items, accountSnapshot{
-			Account: hex.EncodeToString(digest[:8]), Active: account.active + account.pendingSlots,
-			WindowRequests: account.history.count(), RequestsPerMinute: policy.RequestsPerMinute, MaxConcurrency: policy.MaxConcurrency,
-			RateRetryAfter: retrySeconds(account.history.retryAfter(now, policy.RequestsPerMinute)),
-			Admitted:       account.admitted, RateRejected: account.rateRejected, ConcurrencyRejected: account.concurrencyRejected,
-		})
-		for identity := range account.aliases {
-			result.Items[len(result.Items)-1].identities = append(result.Items[len(result.Items)-1].identities, identity)
+		item := accountSnapshot{
+			Account: hex.EncodeToString(digest[:8]), RequestsPerMinute: policy.RequestsPerMinute, MaxConcurrency: policy.MaxConcurrency,
+			Admitted: totals.admitted, RateRejected: totals.rateRejected, ConcurrencyRejected: totals.concurrencyRejected,
 		}
+		if account := l.accounts[key]; account != nil {
+			item.Active = account.active + account.pendingSlots
+			item.WindowRequests = account.history.count()
+			item.RateRetryAfter = retrySeconds(account.history.retryAfter(now, policy.RequestsPerMinute))
+			result.ActiveSlots += item.Active
+			result.PendingAttempts += account.pendingAttempts
+			result.WindowRequests += item.WindowRequests
+		}
+		for identity := range totals.aliases {
+			item.identities = append(item.identities, identity)
+		}
+		result.Items = append(result.Items, item)
 	}
 	sort.Slice(result.Items, func(i, j int) bool { return result.Items[i].Account < result.Items[j].Account })
 	return result

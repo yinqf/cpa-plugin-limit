@@ -215,8 +215,8 @@ func TestRepeatedSelectionReleasesUnexecutedReservation(t *testing.T) {
 		t.Fatal("unexecuted selection leaked capacity")
 	}
 	l.complete("request")
-	if snap := l.snapshot(); snap.PendingAttempts != 0 || snap.ActiveSlots != 0 {
-		t.Fatal("completion leaked a pending reservation")
+	if snap := l.snapshot(); snap.PendingAttempts != 0 || snap.ActiveSlots != 0 || len(snap.Items) != 0 || len(l.totals) != 0 {
+		t.Fatal("completion leaked a pending reservation or created historical counters")
 	}
 }
 

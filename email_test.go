@@ -91,6 +91,30 @@ func TestEmailLabelsFollowAliasesAndGroupsWithoutMergingAccounts(t *testing.T) {
 	}
 }
 
+func TestIdleAccountKeepsEmailAndCumulativeCountersInStatus(t *testing.T) {
+	l, now := testLimiter()
+	l.directory.setLoader(func() ([]credentialEmail, error) {
+		return []credentialEmail{{ID: "private-id", AuthIndex: "private-index", Email: "alice@example.com"}}, nil
+	})
+	for cycle := 1; cycle <= 2; cycle++ {
+		id := fmt.Sprint(cycle)
+		begin(t, l, id)
+		if result := l.admit(id, "private-index", "private-id"); result.status != 0 {
+			t.Fatal(result)
+		}
+		l.complete(id)
+		*now = now.Add(24 * time.Hour)
+		response := call[pluginapi.ManagementResponse](t, l, pluginabi.MethodManagementHandle, pluginapi.ManagementRequest{Method: "GET", Path: "/status"})
+		var result snapshot
+		if err := json.Unmarshal(response.Body, &result); err != nil {
+			t.Fatal(err)
+		}
+		if len(result.Items) != 1 || result.Items[0].Label != "alice@example.com" || result.Items[0].Admitted != uint64(cycle) || result.Items[0].WindowRequests != 0 || result.Items[0].Active != 0 || bytes.Contains(response.Body, []byte("private-")) {
+			t.Fatalf("idle status lost the email or counters, or exposed identities: %s", response.Body)
+		}
+	}
+}
+
 func TestEmailCacheRefreshFailureAndAmbiguousIdentityFallback(t *testing.T) {
 	l, now := testLimiter()
 	admit(t, l, "request", "account")

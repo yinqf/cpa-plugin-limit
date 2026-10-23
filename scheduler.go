@@ -215,17 +215,9 @@ func (l *limiter) pick(input pluginapi.SchedulerPickRequest) pluginapi.Scheduler
 	}
 	choice := candidates[selected]
 	if choice.included {
-		account := l.accounts[choice.key]
+		account := l.trackAccount(choice.key, choice.name, choice.identities)
 		if account == nil {
-			if len(l.accounts) >= maxTrackedAccounts {
-				return pluginapi.SchedulerPickResponse{Handled: true, AuthID: choice.ID}
-			}
-			account = &accountState{name: choice.name, aliases: make(map[string]struct{})}
-			l.accounts[choice.key] = account
-		}
-		for _, identity := range choice.identities {
-			l.aliases[identity] = choice.key
-			account.aliases[identity] = struct{}{}
+			return pluginapi.SchedulerPickResponse{Handled: true, AuthID: choice.ID}
 		}
 		req.pending = choice.key
 		_, reserved := req.accounts[choice.key]
