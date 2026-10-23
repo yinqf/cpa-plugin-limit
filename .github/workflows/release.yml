@@ -2,6 +2,7 @@ name: Release plugin
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -17,6 +18,11 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: plugin-release
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   build:
     name: Build and release linux/amd64
@@ -24,31 +30,65 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.release_tag || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
-      - run: go vet ./...
-      - run: go test -race ./...
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: Test release version selection
+        if: hashFiles('scripts/test_release_version.py') != ''
+        run: python -m unittest discover -s scripts -p 'test_release_version.py' -v
+      - name: Select release version
+        id: version
+        shell: bash
+        env:
+          EXPLICIT_TAG: ${{ inputs.release_tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+        run: |
+          set -euo pipefail
+          git fetch origin --tags
+          if [[ -n "$EXPLICIT_TAG" ]]; then
+            [[ "$EXPLICIT_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            [[ "$(git rev-parse "refs/tags/$EXPLICIT_TAG^{commit}")" == "$(git rev-parse HEAD)" ]]
+            printf 'tag=%s\ncreate_tag=false\n' "$EXPLICIT_TAG" >> "$GITHUB_OUTPUT"
+          else
+            python scripts/release_version.py --output "$GITHUB_OUTPUT"
+          fi
+      - name: Prepare local version tag
+        if: steps.version.outputs.create_tag == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
       - name: Build, verify, and package
         shell: bash
         env:
           GOOS: linux
           GOARCH: amd64
           EXTENSION: so
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           version="${RELEASE_TAG#v}"
           mkdir -p dist
           CGO_ENABLED=1 go build -trimpath -ldflags "-X main.pluginVersion=${version}" -buildmode=c-shared -o "dist/cpa-plugin-limit.${EXTENSION}" .
-          python scripts/smoke_native.py "dist/cpa-plugin-limit.${EXTENSION}"
+          smoke_args=()
+          smoke_help="$(python scripts/smoke_native.py --help)"
+          if [[ "$smoke_help" == *--expected-version* ]]; then
+            smoke_args=(--expected-version "$version")
+          fi
+          python scripts/smoke_native.py "dist/cpa-plugin-limit.${EXTENSION}" "${smoke_args[@]}"
           python - "$version" "$GOOS" "$GOARCH" "$EXTENSION" <<'PY'
           import sys, zipfile
           version, os, arch, extension = sys.argv[1:]
@@ -59,14 +99,26 @@ jobs:
       - name: Generate checksums
         working-directory: dist
         run: sha256sum cpa-plugin-limit_*.zip > checksums.txt
+      - name: Push version tag
+        if: steps.version.outputs.create_tag == 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish)
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        # Publish in this run; pushes made with GITHUB_TOKEN do not trigger another run.
+        run: git push origin "refs/tags/$RELEASE_TAG"
       - name: Publish release
         if: github.event_name != 'workflow_dispatch' || inputs.publish
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }} - Linux amd64
+          make_latest: legacy
           draft: false
           prerelease: false
           generate_release_notes: true
+          body: |
+            Linux amd64 native plugin only. Drain active requests, extract and replace `cpa-plugin-limit.so`, then reload the plugin or restart CPA.
+
+            SHA-256 checksums are attached in `checksums.txt`. See the [Chinese README](${{ github.server_url }}/${{ github.repository }}/blob/${{ steps.version.outputs.tag }}/README_CN.md) for configuration and host boundaries.
           fail_on_unmatched_files: true
           files: |
             dist/*.zip

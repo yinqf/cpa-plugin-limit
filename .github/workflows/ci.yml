@@ -23,6 +23,8 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race ./...
+      - name: Test release version selection
+        run: python3 -m unittest discover -s scripts -p 'test_release_version.py' -v
       - name: Build and exercise native ABI
         run: |
           mkdir -p build

@@ -41,6 +41,7 @@ class HostAPI(ctypes.Structure):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("library", type=Path)
+    parser.add_argument("--expected-version")
     args = parser.parse_args()
     library = ctypes.CDLL(str(args.library.resolve()))
     library.cliproxy_plugin_init.argtypes = [ctypes.c_void_p, ctypes.POINTER(PluginAPI)]
@@ -63,6 +64,8 @@ def main():
 
     registration = call("plugin.register", {"schema_version": 6})
     assert registration["metadata"]["Name"] == "cpa-plugin-limit"
+    if args.expected_version:
+        assert registration["metadata"]["Version"] == args.expected_version
     assert registration["capabilities"]["scheduler"]
     assert registration["capabilities"]["scheduler_across_priorities"]
     fields = {field["Name"]: field for field in registration["metadata"]["ConfigFields"]}
@@ -146,6 +149,8 @@ def main():
     resource = call("management.handle", {"Method": "GET", "Path": "/status"})
     status = json.loads(base64.b64decode(resource["Body"]))
     assert status["admitted"] == 6 and status["rejected"] == 2
+    if args.expected_version:
+        assert status["version"] == args.expected_version
     assert status["active_requests"] == 0
     assert status["active_slots"] == 0 and status["window_requests"] == 6
     assert status["rate_rejected"] == 1 and status["concurrency_rejected"] == 1

@@ -245,8 +245,21 @@ goroutines for atomic admission and completion races. The native smoke script
 loads the actual library through its C ABI using dummy accounts; it makes no
 billable requests and does not prove upstream or duplex-turn coverage.
 
-CI runs formatting, vet, race tests, shared-library compilation, and the native
-smoke test. Pushing a `vX.Y.Z` tag triggers a release build for Linux amd64 only.
+CI runs formatting, vet, race tests, release-version tests, shared-library compilation,
+and the native smoke test. Every push to `main` automatically publishes a patch
+release for that push's exact commit after all checks pass, for Linux amd64 only.
+For example, the next main commit after `v0.1.3` becomes `v0.1.4`. Version allocation
+uses first-parent commit distance, so queued runs remain ordered by version even
+if they start out of order. A batch push or failed build can leave version gaps.
+Reruns reuse an existing version tag on the same commit instead of creating another
+release; tags belonging to other commits are never overwritten. Runs queue without
+canceling earlier pending runs (GitHub permits up to 100 queued runs per group).
+
+Tags are pushed only after the versioned binary passes its native ABI and version
+checks. Tagging and publishing happen in the same run with `GITHUB_TOKEN`, without
+version-file commits or recursive workflow triggers. Pushing a manual `vX.Y.Z` tag
+still publishes that version. Workflow dispatch rebuilds an existing tag; set
+`publish` to false for verification without uploading or modifying a release.
 Other platforms can be built manually. Archives follow
 `cpa-plugin-limit_<version>_<goos>_<goarch>.zip` and include `checksums.txt` in the
 release. `registry.json` uses the same store format as the reference plugin; no
