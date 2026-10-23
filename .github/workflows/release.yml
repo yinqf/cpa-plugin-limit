@@ -1,0 +1,81 @@
+name: Release plugin
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: macos-15-intel, goos: darwin, goarch: amd64, extension: dylib}
+          - {runner: macos-14, goos: darwin, goarch: arm64, extension: dylib}
+          - {runner: ubuntu-24.04, goos: linux, goarch: amd64, extension: so}
+          - {runner: ubuntu-24.04-arm, goos: linux, goarch: arm64, extension: so}
+          - {runner: windows-2022, goos: windows, goarch: amd64, extension: dll}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test -race ./...
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Build, verify, and package
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          EXTENSION: ${{ matrix.extension }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${RELEASE_TAG#v}"
+          mkdir -p dist
+          CGO_ENABLED=1 go build -trimpath -ldflags "-X main.pluginVersion=${version}" -buildmode=c-shared -o "dist/cpa-plugin-limit.${EXTENSION}" .
+          python scripts/smoke_native.py "dist/cpa-plugin-limit.${EXTENSION}"
+          python - "$version" "$GOOS" "$GOARCH" "$EXTENSION" <<'PY'
+          import sys, zipfile
+          version, os, arch, extension = sys.argv[1:]
+          binary = f"cpa-plugin-limit.{extension}"
+          with zipfile.ZipFile(f"dist/cpa-plugin-limit_{version}_{os}_{arch}.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+              archive.write(f"dist/{binary}", binary)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpa-plugin-limit-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cpa-plugin-limit-*
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum cpa-plugin-limit_*.zip > checksums.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.zip
+            dist/checksums.txt

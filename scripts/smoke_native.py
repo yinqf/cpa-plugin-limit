@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Exercise the built C ABI with dummy requests and no upstream connections."""
+
+import argparse
+import base64
+import ctypes
+import json
+from pathlib import Path
+
+
+class Buffer(ctypes.Structure):
+    _fields_ = [("ptr", ctypes.c_void_p), ("len", ctypes.c_size_t)]
+
+
+CALL = ctypes.CFUNCTYPE(
+    ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t,
+    ctypes.POINTER(Buffer),
+)
+FREE = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_size_t)
+SHUTDOWN = ctypes.CFUNCTYPE(None)
+
+
+class PluginAPI(ctypes.Structure):
+    _fields_ = [
+        ("abi_version", ctypes.c_uint32), ("call", CALL),
+        ("free_buffer", FREE), ("shutdown", SHUTDOWN),
+    ]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("library", type=Path)
+    args = parser.parse_args()
+    library = ctypes.CDLL(str(args.library.resolve()))
+    library.cliproxy_plugin_init.argtypes = [ctypes.c_void_p, ctypes.POINTER(PluginAPI)]
+    library.cliproxy_plugin_init.restype = ctypes.c_int
+    api = PluginAPI()
+    assert library.cliproxy_plugin_init(None, ctypes.byref(api)) == 0
+    assert api.abi_version == 1
+
+    def call(method, payload):
+        raw = json.dumps(payload).encode()
+        request = ctypes.create_string_buffer(raw)
+        output = Buffer()
+        result = api.call(method.encode(), request, len(raw), ctypes.byref(output))
+        try:
+            response = json.loads(ctypes.string_at(output.ptr, output.len))
+        finally:
+            api.free_buffer(output.ptr, output.len)
+        assert result == 0 and response["ok"], response
+        return response["result"]
+
+    registration = call("plugin.register", {"schema_version": 6})
+    assert registration["metadata"]["Name"] == "cpa-plugin-limit"
+    assert not registration["capabilities"].get("scheduler")
+    fields = {field["Name"]: field for field in registration["metadata"]["ConfigFields"]}
+    assert fields["requests_per_minute"]["Default"] == 5
+    assert fields["max_concurrency"]["Default"] == 1
+    assert fields["auth_indexes"]["Default"] == []
+    assert fields["account_groups"]["Default"] == {}
+    assert fields["account_limits"]["Default"] == {}
+
+    def before(request_id):
+        result = call("request.intercept_before", {"RequestID": request_id})
+        assert not result["Terminate"], result
+
+    def after(request_id, account="dummy-account"):
+        return call("request.intercept_after", {
+            "RequestID": request_id, "SourceFormat": "openai-response",
+            "Metadata": {"selected_auth_index": account},
+        })
+
+    def complete(request_id):
+        call("request.complete", {"RequestID": request_id, "Outcome": "succeeded"})
+
+    before("first")
+    assert not after("first")["Terminate"]
+    before("busy")
+    busy = after("busy")
+    assert busy["Terminate"] and busy["StatusCode"] == 429
+    assert busy["ResponseHeaders"]["Retry-After"] == ["1"]
+    complete("busy")
+    complete("first")
+    complete("first")
+    for i in range(4):
+        request_id = f"next-{i}"
+        before(request_id)
+        assert not after(request_id)["Terminate"]
+        complete(request_id)
+    before("rate-limited")
+    limited = after("rate-limited")
+    body = json.loads(base64.b64decode(limited["ResponseBody"]))
+    assert limited["StatusCode"] == 429
+    assert body["error"]["code"] == "account_rate_limit_exceeded"
+    assert 1 <= int(limited["ResponseHeaders"]["Retry-After"][0]) <= 60
+    complete("rate-limited")
+
+    before("isolated")
+    assert not after("isolated", "another-dummy-account")["Terminate"]
+    complete("isolated")
+    resource = call("management.handle", {"Method": "GET", "Path": "/status"})
+    status = json.loads(base64.b64decode(resource["Body"]))
+    assert status["admitted"] == 6 and status["rejected"] == 2
+    assert status["active_requests"] == 0
+    assert status["active_slots"] == 0 and status["window_requests"] == 6
+    assert status["rate_rejected"] == 1 and status["concurrency_rejected"] == 1
+    assert status["defaults"] == {"requests_per_minute": 5, "max_concurrency": 1}
+    assert status["scope"]["all_credentials"]
+    assert "dummy-account" not in json.dumps(status)
+    call("plugin.quiesce", {})
+    assert call("request.intercept_before", {"RequestID": "stopped"})["StatusCode"] == 503
+    api.shutdown()
+    print("Native ABI smoke passed: registration, account isolation, concurrency, RPM, release, status, shutdown")
+
+
+if __name__ == "__main__":
+    main()

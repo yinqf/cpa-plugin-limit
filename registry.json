@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "cpa-plugin-limit",
+      "name": "cpa-plugin-limit",
+      "description": "Shared upstream account concurrency limits and rolling 60-second request admission for CLIProxyAPI.",
+      "author": "yinqf",
+      "repository": "https://github.com/yinqf/cpa-plugin-limit",
+      "homepage": "https://github.com/yinqf/cpa-plugin-limit",
+      "tags": ["codex", "rate-limit", "concurrency", "session-affinity"],
+      "auth_required": true
+    }
+  ]
+}

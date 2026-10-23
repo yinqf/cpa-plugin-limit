@@ -1,0 +1,29 @@
+name: Test plugin
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: Build and exercise native ABI
+        run: |
+          mkdir -p build
+          go build -buildmode=c-shared -o build/cpa-plugin-limit.so .
+          python3 scripts/smoke_native.py build/cpa-plugin-limit.so

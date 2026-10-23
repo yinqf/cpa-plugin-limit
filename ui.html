@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>账户限流监控 · CPA</title>
+  <style>
+    :root { color-scheme: light dark; font: 14px/1.6 system-ui, -apple-system, sans-serif; --bg: #f6f8fa; --panel: #fff; --text: #182230; --muted: #657084; --border: #e4e8ee; --accent: #2563eb; --good: #177a54; --good-bg: #edf8f1; --warn: #9b6400; --warn-bg: #fff7df; --bad: #b53636; --bad-bg: #fff0f0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    main { max-width: 1200px; margin: 0 auto; padding: 32px 24px; }
+    header, .toolbar, .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    header { align-items: flex-start; margin-bottom: 24px; }
+    h1 { margin: 0; font-size: 24px; letter-spacing: -.5px; }
+    h2 { margin: 0; font-size: 16px; }
+    p { margin: 6px 0 0; }
+    .muted, small { color: var(--muted); }
+    .toolbar { flex-wrap: wrap; justify-content: flex-end; }
+    button, select { font: inherit; color: inherit; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); min-height: 38px; padding: 7px 12px; }
+    button { cursor: pointer; }
+    button:active { transform: scale(.97); }
+    button:disabled { cursor: wait; opacity: .6; }
+    button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    .auto-label { display: flex; align-items: center; gap: 8px; color: var(--muted); white-space: nowrap; }
+    .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }
+    .card, .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
+    .card { padding: 18px 20px; }
+    .card-label { color: var(--muted); font-size: 13px; }
+    .card-value { display: block; font-size: 30px; font-weight: 650; line-height: 1.5; font-variant-numeric: tabular-nums; }
+    .card small { font-size: 12px; }
+    .panel { margin-bottom: 18px; overflow: hidden; }
+    .panel-heading { padding: 18px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+    .policy { padding: 16px 20px; display: flex; flex-wrap: wrap; gap: 12px 28px; }
+    .policy strong { margin-left: 8px; font-weight: 600; color: var(--text); }
+    .config-guide { padding: 0 20px 18px; color: var(--muted); font-size: 13px; }
+    .config-guide strong { color: var(--text); }
+    .scroll { overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+    th, td { padding: 14px 20px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+    th { background: var(--bg); color: var(--muted); font-size: 12px; font-weight: 500; }
+    tbody tr:last-child td { border-bottom: 0; }
+    code { font: 12px ui-monospace, SFMono-Regular, monospace; }
+    .usage { min-width: 135px; }
+    progress { display: block; width: 132px; height: 5px; margin-top: 6px; accent-color: var(--accent); }
+    .badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 6px; font-size: 12px; font-weight: 500; }
+    .good { color: var(--good); background: var(--good-bg); }
+    .warn { color: var(--warn); background: var(--warn-bg); }
+    .bad { color: var(--bad); background: var(--bad-bg); }
+    .empty { text-align: center; padding: 42px 20px; color: var(--muted); white-space: normal; }
+    .error { color: var(--bad); background: var(--bad-bg); padding: 12px 16px; border-radius: 8px; margin-bottom: 18px; }
+    .error[hidden] { display: none; }
+    .footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; }
+    details { margin-top: 16px; color: var(--muted); font-size: 12px; }
+    summary { cursor: pointer; width: fit-content; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #13171e; --panel: #1b212c; --text: #e8edf5; --muted: #a0acbc; --border: #303949; --accent: #7ba6ff; --good: #7ed3a8; --good-bg: #173b2c; --warn: #f2c36a; --warn-bg: #3c3015; --bad: #ffa2a2; --bad-bg: #462828; }
+    }
+    @media (max-width: 700px) {
+      main { padding: 20px 14px; }
+      header { flex-direction: column; gap: 16px; }
+      .toolbar { justify-content: flex-start; }
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+      .card { padding: 14px; }
+      .card-value { font-size: 26px; }
+      .policy { gap: 8px 20px; }
+      th, td { padding: 12px 16px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>账户限流监控</h1><p class="muted">按上游账户共享限额，保留会话亲和。</p></div>
+    <div class="toolbar">
+      <label class="auto-label" for="interval">自动刷新
+        <select id="interval"><option value="0">关闭</option><option value="5" selected>每 5 秒</option><option value="10">每 10 秒</option><option value="30">每 30 秒</option></select>
+      </label>
+      <button id="refresh" type="button">立即刷新</button>
+    </div>
+  </header>
+  <div id="error" class="error" role="alert" hidden></div>
+  <section class="cards" aria-label="汇总统计">
+    <article class="card"><span class="card-label">正在占用的并发名额</span><strong id="active" class="card-value">—</strong><small id="requests">等待状态数据</small></article>
+    <article class="card"><span class="card-label">最近 60 秒已放行</span><strong id="window" class="card-value">—</strong><small>所有已跟踪账户合计</small></article>
+    <article class="card"><span class="card-label">累计已放行</span><strong id="admitted" class="card-value">—</strong><small>请求尝试数，重启后清零</small></article>
+    <article class="card"><span class="card-label">累计已拒绝</span><strong id="rejected" class="card-value">—</strong><small id="rejected-detail">限频 / 并发</small></article>
+  </section>
+  <section class="panel" aria-labelledby="policy-heading">
+    <div class="panel-heading"><h2 id="policy-heading">当前生效配置</h2><span id="health" class="badge good">正在读取</span></div>
+    <div class="policy">
+      <span class="muted">全局限频<strong id="default-rpm">—</strong></span>
+      <span class="muted">全局并发<strong id="default-concurrency">—</strong></span>
+      <span class="muted">限制范围<strong id="scope">—</strong></span>
+      <span class="muted">账户分组 / 单独配置<strong id="overrides">—</strong></span>
+    </div>
+    <p class="config-guide">在 CPA <strong>插件管理 → cpa-plugin-limit → 配置</strong> 中编辑全部参数，保存后生效。单账户配置会覆盖全局阈值；数值为 0 表示关闭对应限制。</p>
+  </section>
+  <section class="panel" aria-labelledby="accounts-heading">
+    <div class="panel-heading"><h2 id="accounts-heading">账户明细 <span id="account-count" class="muted"></span></h2><small>以脱敏指纹标识账户或合并分组</small></div>
+    <div class="scroll" role="region" aria-label="账户限流明细，可左右滚动" tabindex="0"><table>
+      <thead><tr><th>账户指纹</th><th>当前状态</th><th>并发占用 / 上限</th><th>60 秒请求 / 上限</th><th>限频恢复</th><th>累计放行</th><th>拒绝：限频 / 并发</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="7" class="empty">正在读取账户状态…</td></tr></tbody>
+    </table></div>
+  </section>
+  <div class="footer"><span id="observed" role="status">等待首次刷新</span><span id="version">cpa-plugin-limit</span></div>
+  <details><summary>统计口径与覆盖范围</summary><p>空闲账户在最近一分钟记录过期后从明细移除，账户累计统计随之清零，全局累计统计保留到插件重启。并发名额等待宿主完成通知释放；故障转移可能保守占用多个账户名额。监控不展示凭据、会话或请求内容。双向 WebSocket 后续轮次与部分内部重发需要宿主钩子支持；多实例之间不共享计数。</p></details>
+</main>
+<script>
+  const button = document.getElementById('refresh');
+  const interval = document.getElementById('interval');
+  const format = new Intl.NumberFormat('zh-CN');
+  const setText = (id, value) => { document.getElementById(id).textContent = value; };
+  const element = (tag, value, className) => {
+    const node = document.createElement(tag);
+    if (value !== undefined) node.textContent = value;
+    if (className) node.className = className;
+    return node;
+  };
+  let timer = null;
+  let loading = false;
+  let hasData = false;
+
+  function usageCell(value, limit) {
+    const cell = element('td', format.format(value) + ' / ' + (limit || '不限'), 'usage');
+    if (limit > 0) {
+      const bar = element('progress');
+      bar.max = limit;
+      bar.value = Math.min(value, limit);
+      bar.setAttribute('aria-label', value + ' / ' + limit);
+      cell.append(bar);
+    }
+    return cell;
+  }
+
+  function render(state) {
+    setText('active', format.format(state.active_slots));
+    setText('requests', state.active_requests + ' 个请求正在跟踪');
+    setText('window', format.format(state.window_requests));
+    setText('admitted', format.format(state.admitted));
+    setText('rejected', format.format(state.rejected));
+    setText('rejected-detail', '限频 ' + format.format(state.rate_rejected) + ' / 并发 ' + format.format(state.concurrency_rejected));
+    setText('default-rpm', state.defaults.requests_per_minute ? state.defaults.requests_per_minute + ' 次 / 分钟' : '不限制');
+    setText('default-concurrency', state.defaults.max_concurrency ? state.defaults.max_concurrency + ' 个请求' : '不限制');
+    setText('scope', state.scope.all_credentials ? '所有上游凭据' : state.scope.selected_count + ' 个指定凭据及其分组');
+    setText('overrides', state.scope.group_count + ' / ' + state.scope.override_count);
+    const health = document.getElementById('health');
+    health.textContent = state.quiescing ? '正在停止接收请求' : '运行正常';
+    health.className = 'badge ' + (state.quiescing ? 'warn' : 'good');
+    setText('account-count', '（' + state.items.length + '）');
+    const rows = state.items.map(item => {
+      const row = element('tr');
+      const identity = element('td');
+      identity.append(element('code', item.account));
+      const rateFull = item.requests_per_minute > 0 && item.window_requests >= item.requests_per_minute;
+      const busy = item.max_concurrency > 0 && item.active >= item.max_concurrency;
+      const status = element('td');
+      status.append(element('span', rateFull && busy ? '限频 · 并发已满' : rateFull ? '已达限频' : busy ? '并发已满' : '可接收请求', 'badge ' + (rateFull ? 'bad' : busy ? 'warn' : 'good')));
+      row.append(identity, status, usageCell(item.active, item.max_concurrency), usageCell(item.window_requests, item.requests_per_minute),
+        element('td', item.rate_retry_after_seconds > 0 ? item.rate_retry_after_seconds + ' 秒后' : '—'),
+        element('td', format.format(item.admitted)),
+        element('td', format.format(item.rate_rejected) + ' / ' + format.format(item.concurrency_rejected)));
+      return row;
+    });
+    if (!rows.length) {
+      const row = element('tr');
+      const cell = element('td', '暂无账户记录。受限账户收到请求后会自动出现在这里。', 'empty');
+      cell.colSpan = 7;
+      row.append(cell);
+      rows.push(row);
+    }
+    document.getElementById('rows').replaceChildren(...rows);
+    setText('observed', '更新于 ' + new Date(state.observed_at).toLocaleString('zh-CN'));
+    setText('version', 'cpa-plugin-limit · v' + state.version);
+  }
+
+  async function refresh() {
+    if (loading) return;
+    loading = true;
+    button.disabled = true;
+    button.textContent = '刷新中…';
+    try {
+      const url = new URL(location.href);
+      url.pathname = url.pathname.replace(/\/ui\/?$/, '/status');
+      url.search = '';
+      url.hash = '';
+      const response = await fetch(url, { cache: 'no-store' });
+      if (!response.ok) throw new Error('状态接口返回 ' + response.status);
+      const state = await response.json();
+      render(state);
+      hasData = true;
+      document.getElementById('error').hidden = true;
+    } catch (error) {
+      const alert = document.getElementById('error');
+      alert.textContent = (hasData ? '刷新失败，当前显示的是上次数据。' : '暂时无法读取监控数据，请稍后重试。') + error.message;
+      alert.hidden = false;
+      if (!hasData) document.querySelector('#rows .empty').textContent = '尚未获取账户状态。';
+      setText('health', '数据未更新');
+      document.getElementById('health').className = 'badge warn';
+    } finally {
+      loading = false;
+      button.disabled = false;
+      button.textContent = '立即刷新';
+    }
+  }
+
+  function scheduleRefresh() {
+    if (timer !== null) clearInterval(timer);
+    timer = null;
+    if (!document.hidden && Number(interval.value) > 0) timer = setInterval(refresh, Number(interval.value) * 1000);
+  }
+  button.addEventListener('click', refresh);
+  interval.addEventListener('change', scheduleRefresh);
+  document.addEventListener('visibilitychange', () => {
+    scheduleRefresh();
+    if (!document.hidden && Number(interval.value) > 0) refresh();
+  });
+  window.addEventListener('pagehide', () => { if (timer !== null) clearInterval(timer); });
+  window.addEventListener('pageshow', scheduleRefresh);
+  refresh();
+  scheduleRefresh();
+</script>
+</body>
+</html>

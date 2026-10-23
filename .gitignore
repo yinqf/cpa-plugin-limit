@@ -1,0 +1,8 @@
+/build/
+/dist/
+*.dylib
+*.so
+*.dll
+/cpa-plugin-limit.h
+__pycache__/
+*.py[cod]
