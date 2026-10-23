@@ -184,8 +184,8 @@ loads the actual library through its C ABI using dummy accounts; it makes no
 billable requests and does not prove upstream or duplex-turn coverage.
 
 CI runs formatting, vet, race tests, shared-library compilation, and the native
-smoke test. Pushing a `vX.Y.Z` tag triggers release builds for macOS amd64/arm64,
-Linux amd64/arm64, and Windows amd64. Archives follow
+smoke test. Pushing a `vX.Y.Z` tag triggers a release build for Linux amd64 only.
+Other platforms can be built manually. Archives follow
 `cpa-plugin-limit_<version>_<goos>_<goarch>.zip` and include `checksums.txt` in the
 release. `registry.json` uses the same store format as the reference plugin; no
 release, registry upload, or deployment is performed by local builds.
