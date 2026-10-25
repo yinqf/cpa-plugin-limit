@@ -357,12 +357,12 @@ func TestActiveRequestsNeverExpireWithTheRateWindow(t *testing.T) {
 	if len(l.accounts) != 0 || len(l.aliases) != 0 {
 		t.Fatal("idle enforcement state or identity mappings were not evicted")
 	}
-	if len(result.Items) != 1 || result.Items[0].Admitted != 2 || result.Items[0].ConcurrencyRejected != 1 || result.Items[0].Active != 0 || result.Items[0].WindowRequests != 0 {
+	if len(result.Items) != 1 || result.Items[0].Admitted != 1 || result.Items[0].ConcurrencyRejected != 1 || result.Items[0].Active != 0 || result.Items[0].WindowRequests != 0 {
 		t.Fatalf("idle account lost cumulative counters: %+v", result)
 	}
 }
 
-func TestAccountTotalsSurviveIdleWindowsAndReconfigurationUntilRestart(t *testing.T) {
+func TestDailyAccountTotalsSurviveIdleWindowsAndReconfiguration(t *testing.T) {
 	l, now := testLimiter()
 	cfg := defaultConfig()
 	cfg.RequestsPerMinute = 2

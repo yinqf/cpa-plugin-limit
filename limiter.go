@@ -18,6 +18,8 @@ const (
 	maxCompletedRequests = 16384
 )
 
+var beijingTime = time.FixedZone("Asia/Shanghai", 8*60*60)
+
 // history retains the newest maxLimit attempts, including while RPM is disabled.
 // Keeping that many is enough to enforce every supported limit after a reload.
 type history struct {
@@ -56,7 +58,7 @@ func (h *history) retryAfter(now time.Time, limit int) time.Duration {
 	return h.times[len(h.times)-limit].Add(rateWindow).Sub(now)
 }
 
-// Account totals outlive the rolling-window buckets and reset with the plugin.
+// Account totals outlive rolling-window buckets within the current Beijing day.
 type accountTotals struct {
 	name                string
 	aliases             map[string]struct{}
@@ -105,6 +107,7 @@ type limiter struct {
 	completed         map[string]*list.Element
 	completionOrder   list.List
 	nextCleanup       time.Time
+	statisticsDay     time.Time
 	admitted          uint64
 	rejected          uint64
 	rateRejected      uint64
@@ -122,6 +125,29 @@ func newLimiter(now func() time.Time) *limiter {
 		totals:  make(map[string]*accountTotals),
 		aliases: make(map[string]string), requests: make(map[string]*requestState),
 		completed: make(map[string]*list.Element), bindings: make(map[string]*list.Element),
+		statisticsDay: beijingDay(now()),
+	}
+}
+
+func beijingDay(now time.Time) time.Time {
+	year, month, day := now.In(beijingTime).Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, beijingTime)
+}
+
+// Call with mu held before counting or reading statistics. A quiet process needs
+// no midnight timer: its next operation advances the day before exposing totals.
+func (l *limiter) resetDailyTotals(now time.Time) {
+	day := beijingDay(now)
+	if day.Equal(l.statisticsDay) {
+		return
+	}
+	l.statisticsDay = day
+	l.admitted, l.rejected, l.rateRejected, l.busyRejected = 0, 0, 0, 0
+	clear(l.totals)
+	for key, account := range l.accounts {
+		// Preserve enforcement, pending reservations, aliases, and session affinity.
+		account.totals = &accountTotals{name: account.name, aliases: maps.Clone(account.aliases)}
+		l.totals[key] = account.totals
 	}
 }
 
@@ -180,6 +206,7 @@ func (l *limiter) admit(requestID, index, id string) decision {
 		return unavailable("limiter_missing_account", "The host did not provide the selected upstream credential identity.")
 	}
 	now := l.now()
+	l.resetDailyTotals(now)
 	if !now.Before(l.nextCleanup) {
 		l.cleanup(now)
 	}
@@ -311,6 +338,7 @@ func (l *limiter) complete(id string) {
 }
 
 func (l *limiter) cleanup(now time.Time) {
+	l.resetDailyTotals(now)
 	for key, account := range l.accounts {
 		account.history.prune(now)
 		if account.active == 0 && account.pendingAttempts == 0 && account.history.count() == 0 {
@@ -350,6 +378,7 @@ type accountSnapshot struct {
 type snapshot struct {
 	Version            string            `json:"version"`
 	ObservedAt         time.Time         `json:"observed_at"`
+	StatisticsDate     string            `json:"statistics_date"`
 	Quiescing          bool              `json:"quiescing"`
 	ActiveRequests     int               `json:"active_requests"`
 	Admitted           uint64            `json:"admitted"`
@@ -388,6 +417,7 @@ func (l *limiter) snapshot() snapshot {
 	}
 	result := snapshot{
 		Version: pluginVersion, ObservedAt: now.UTC(), Quiescing: l.quiescing,
+		StatisticsDate: l.statisticsDay.Format(time.DateOnly),
 		ActiveRequests: len(l.requests), Admitted: l.admitted, Rejected: l.rejected,
 		RateRejected: l.rateRejected, BusyRejected: l.busyRejected, Defaults: l.cfg.limits,
 		AccountDisplay: l.cfg.AccountDisplay,

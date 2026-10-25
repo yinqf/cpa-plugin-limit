@@ -158,7 +158,7 @@ mode uses the same-origin CPA theme preference when available, then the system
 preference. No CPA or management frontend changes are required.
 
 Four summary cards show occupied account slots, attempts admitted in the last
-60 seconds, lifetime admitted attempts, and lifetime rejections. Account rows show
+60 seconds, today's admitted attempts, and today's rejections. Account rows show
 utilization bars, rate/concurrency status, retry timing, and rejection breakdowns.
 The page also shows effective global limits and scope/group/override counts.
 It refreshes every five seconds by default; select manual, 10-second, or 30-second
@@ -184,29 +184,36 @@ Credential indexes, IDs, group names,
 client keys, session IDs, request IDs, headers, and bodies are never returned.
 No deprecated `/v0/management` routes are added.
 
-`status` returns `version`, `observed_at`, `quiescing`, `active_requests`,
-`active_slots`, `window_requests`, lifetime `admitted`/`rejected` attempt counters,
+`status` returns `version`, `observed_at`, `statistics_date` (YYYY-MM-DD in Beijing
+time, UTC+8), `quiescing`, `active_requests`,
+`active_slots`, `window_requests`, daily `admitted`/`rejected` attempt counters,
 `rate_rejected`, `concurrency_rejected`, effective `defaults`, redacted `scope`
 counts, `account_display`, `email_lookup_available`, `routing_mode`,
 `session_affinity_ttl_seconds`, `affinity_sessions`, optional `scheduler_last_seen`,
 `pending_attempts`, and `items`. Each item contains
 `account` (always a fingerprint), an optional `label` (email display),
 `active`, `window_requests`, configured limits, `rate_retry_after_seconds`, and
-admitted/rate-rejected/concurrency-rejected counters. Account rows and all three
-per-account counters remain after idle periods and rolling-window expiry, and
-continue accumulating when the same bucket receives traffic again. Global and
-per-account totals reset only when CPA restarts or the plugin is reloaded;
-configuration updates and monitoring refreshes preserve them. Changing identity
-groups retains the old buckets' historical totals and counts new groups separately.
-`window_requests` is
+admitted/rate-rejected/concurrency-rejected counters. All global and per-account
+attempt counters accumulate within the current Beijing calendar day and reset
+at 00:00 UTC+8, independently of the server's timezone. Each admission or rejection
+belongs to the day of that decision. Rollover is applied before the next admission,
+scheduler lookup, configuration update, or status read; no background timer is needed.
+Rollover preserves active and pending reservations, rolling 60-second history, and
+session affinity. Yesterday-only idle rows are removed; accounts still executing or
+within their rate window remain visible with today's counters starting at zero.
+Within the same day, idle periods, configuration updates, and monitoring refreshes
+preserve counters. State remains in memory, so restarting CPA or reloading the plugin
+also clears today's totals. Changing identity groups retains the old buckets' daily
+totals and counts new groups separately. `window_requests` is
 capped at 10000 while RPM is disabled. The concurrency retry hint is one second;
 the actual release time depends on the running request.
 
 Enforcement state is bounded to 4096 live/recent account buckets and 16384 active
 request trackers and session bindings, plus 16384 recent completion IDs. Idle
 enforcement buckets and aliases are reclaimed after their 60-second history expires.
-Historical counters and email lookup identities remain in memory for each observed
-account bucket until restart or plugin reload; they do not occupy enforcement slots.
+Daily counters and email lookup identities remain in memory for each account bucket
+observed today; they do not occupy enforcement slots. Rollover discards yesterday's
+totals and retains only identities still needed by live/recent enforcement buckets.
 Exhaustion or missing required host identity returns **503**
 instead of silently bypassing protection. Completion is asynchronous in CPA, so a
 recently finished request may briefly retain its slot until notification arrives.

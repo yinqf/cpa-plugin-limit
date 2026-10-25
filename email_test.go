@@ -103,7 +103,7 @@ func TestIdleAccountKeepsEmailAndCumulativeCountersInStatus(t *testing.T) {
 			t.Fatal(result)
 		}
 		l.complete(id)
-		*now = now.Add(24 * time.Hour)
+		*now = now.Add(time.Hour)
 		response := call[pluginapi.ManagementResponse](t, l, pluginabi.MethodManagementHandle, pluginapi.ManagementRequest{Method: "GET", Path: "/status"})
 		var result snapshot
 		if err := json.Unmarshal(response.Body, &result); err != nil {

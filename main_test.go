@@ -124,7 +124,7 @@ func TestMonitorSummaryReflectsRuntimeAndKeepsCompletedRejections(t *testing.T) 
 	*now = now.Add(time.Minute)
 	result := l.snapshot()
 	if result.ActiveSlots != 0 || result.WindowRequests != 0 || result.ActiveRequests != 0 || len(result.Items) != 1 || result.Rejected != 2 || result.BusyRejected != 1 || result.RateRejected != 1 {
-		t.Fatalf("expired account discarded lifetime monitoring totals: %+v", result)
+		t.Fatalf("expired account discarded daily monitoring totals: %+v", result)
 	}
 	if row := result.Items[0]; row.Admitted != 5 || row.RateRejected != 1 || row.ConcurrencyRejected != 1 {
 		t.Fatalf("expired account discarded per-account totals: %+v", row)

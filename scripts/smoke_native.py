@@ -4,6 +4,7 @@
 import argparse
 import base64
 import ctypes
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -148,6 +149,8 @@ def main():
     assert not host_calls, "email lookup ran on the admission path"
     resource = call("management.handle", {"Method": "GET", "Path": "/status"})
     status = json.loads(base64.b64decode(resource["Body"]))
+    observed = datetime.fromisoformat(status["observed_at"].replace("Z", "+00:00"))
+    assert status["statistics_date"] == observed.astimezone(timezone(timedelta(hours=8))).date().isoformat()
     assert status["admitted"] == 6 and status["rejected"] == 2
     if args.expected_version:
         assert status["version"] == args.expected_version
