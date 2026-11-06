@@ -82,6 +82,7 @@ type requestState struct {
 	session     string
 	pending     string
 	pendingSlot bool
+	selected    responseAccountIdentity
 }
 
 type decision struct {
@@ -201,6 +202,7 @@ func (l *limiter) admit(requestID, index, id string) decision {
 	if req == nil {
 		return unavailable("limiter_request_inactive", "The host did not begin this request, or it has already completed.")
 	}
+	req.selected = responseAccountIdentity{}
 	l.releasePending(req)
 	if index == "" && id == "" {
 		return unavailable("limiter_missing_account", "The host did not provide the selected upstream credential identity.")
@@ -215,6 +217,7 @@ func (l *limiter) admit(requestID, index, id string) decision {
 		return unavailable("limiter_identity_conflict", "The host linked conflicting credential identities; drain these credentials before retrying.")
 	}
 	if !l.included(index, id, key) {
+		req.selected = responseAccountIdentity{index: index, id: id}
 		return decision{}
 	}
 	account := l.trackAccount(key, name, identities)
@@ -246,6 +249,7 @@ func (l *limiter) admit(requestID, index, id string) decision {
 		req.accounts[key] = struct{}{}
 		account.active++
 	}
+	req.selected = responseAccountIdentity{index: index, id: id}
 	return decision{}
 }
 

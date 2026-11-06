@@ -1,6 +1,9 @@
 package main
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 const (
 	accountEmailHeader = "X-CPA-Account-Email"
@@ -9,18 +12,38 @@ const (
 
 // Ignore bodies and history: diagnostics never transform or buffer response data.
 type accountResponseRequest struct {
+	RequestID  string
 	ChunkIndex int
 	Metadata   map[string]any
+}
+
+type responseAccountIdentity struct {
+	index string
+	id    string
 }
 
 func accountResponseHeaderNames() []string {
 	return []string{accountEmailHeader, authIndexHeader}
 }
 
-func (l *limiter) accountResponseHeaders(metadata map[string]any) http.Header {
+func (l *limiter) accountResponseHeaders(req accountResponseRequest) http.Header {
 	headers := make(http.Header)
-	index := accountHeaderValue(metadataString(metadata, "selected_auth_index"))
-	id := metadataString(metadata, "selected_auth_id")
+	index := metadataString(req.Metadata, "selected_auth_index")
+	id := metadataString(req.Metadata, "selected_auth_id")
+	_, hasIndex := req.Metadata["selected_auth_index"]
+	_, hasID := req.Metadata["selected_auth_id"]
+	// Some hosts omit selection metadata from response hooks. The after-auth
+	// admission belongs to this lifecycle ID and tracks the latest attempt,
+	// including credentials outside the limiter's scope. Never mix identities
+	// from explicit metadata with the remembered pair.
+	if !hasIndex && !hasID {
+		l.mu.Lock()
+		if tracked := l.requests[strings.TrimSpace(req.RequestID)]; tracked != nil {
+			index, id = tracked.selected.index, tracked.selected.id
+		}
+		l.mu.Unlock()
+	}
+	index = accountHeaderValue(index)
 	if index == "" && id == "" {
 		return headers
 	}

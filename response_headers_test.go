@@ -136,3 +136,147 @@ func TestAccountHeaderLookupFailureDoesNotBreakResponses(t *testing.T) {
 		})
 	}
 }
+
+// CPA's executor copies selection metadata into a private attempt map. Response
+// hooks can receive only the original metadata, but keep the same RequestID.
+func TestAccountHeadersRecoverSelectionFromRequestLifecycle(t *testing.T) {
+	for _, mode := range []string{routingCapacity, routingGuard} {
+		for _, stream := range []bool{false, true} {
+			for _, excluded := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/stream=%t/excluded=%t", mode, stream, excluded), func(t *testing.T) {
+					l, _ := testLimiter()
+					cfg := defaultConfig()
+					cfg.RoutingMode = mode
+					if excluded {
+						cfg.AuthIndexes = []string{"another-index"}
+					}
+					configure(t, l, cfg)
+					lookups := 0
+					l.directory.setLoader(func() ([]credentialEmail, error) {
+						lookups++
+						return []credentialEmail{{ID: "auth-a", AuthIndex: "index-a", Email: "alice@example.com"}}, nil
+					})
+					startAccountHeaderRequest(t, l, "request-a", "index-a", "auth-a")
+					if lookups != 0 {
+						t.Fatal("admission queried the account directory")
+					}
+					var headers http.Header
+					if stream {
+						response := call[pluginapi.StreamChunkInterceptResponse](t, l, pluginabi.MethodResponseInterceptStreamChunk, pluginapi.StreamChunkInterceptRequest{
+							RequestID: "request-a", ChunkIndex: pluginapi.StreamChunkHeaderInitIndex, Metadata: map[string]any{"requested_model": "test-model"},
+						})
+						headers = response.Headers
+						if len(response.Body) != 0 || response.DropChunk {
+							t.Fatalf("modified stream: %+v", response)
+						}
+					} else {
+						response := call[pluginapi.ResponseInterceptResponse](t, l, pluginabi.MethodResponseInterceptAfter, pluginapi.ResponseInterceptRequest{
+							RequestID: "request-a", Metadata: map[string]any{"requested_model": "test-model"}, Body: []byte(`{"output":[]}`),
+						})
+						headers = response.Headers
+						if len(response.Body) != 0 {
+							t.Fatalf("modified response: %+v", response)
+						}
+					}
+					if headers.Get(accountEmailHeader) != "alice@example.com" || headers.Get(authIndexHeader) != "index-a" || lookups != 1 {
+						t.Fatalf("lost admitted account: headers=%v lookups=%d", headers, lookups)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestAccountHeaderFallbackTracksLatestAttemptWithoutMixingRequests(t *testing.T) {
+	l, _ := testLimiter()
+	cfg := defaultConfig()
+	cfg.MaxConcurrency = 0
+	cfg.AccountGroups = map[string]string{"index-a": "same-group", "index-b": "same-group"}
+	configure(t, l, cfg)
+	l.directory.setLoader(func() ([]credentialEmail, error) {
+		return []credentialEmail{
+			{ID: "auth-a", AuthIndex: "index-a", Email: "alice@example.com"},
+			{ID: "auth-b", AuthIndex: "index-b", Email: "bob@example.com"},
+		}, nil
+	})
+	startAccountHeaderRequest(t, l, "first", "index-a", "auth-a")
+	startAccountHeaderRequest(t, l, "second", "index-a", "auth-a")
+	startAccountHeaderRequest(t, l, "first", "index-b", "auth-b")
+	for _, tc := range []struct{ request, index, email string }{
+		{"first", "index-b", "bob@example.com"},
+		{"second", "index-a", "alice@example.com"},
+		{"unrelated", "", ""},
+	} {
+		headers := accountHeaderFallback(t, l, tc.request, nil)
+		if headers.Get(accountEmailHeader) != tc.email || headers.Get(authIndexHeader) != tc.index {
+			t.Fatalf("wrong last attempt for %s: %v", tc.request, headers)
+		}
+	}
+	l.complete("first")
+	if headers := accountHeaderFallback(t, l, "first", nil); len(headers) != 0 {
+		t.Fatalf("completed request retained its account: %v", headers)
+	}
+	if headers := accountHeaderFallback(t, l, "second", nil); headers.Get(accountEmailHeader) != "alice@example.com" {
+		t.Fatalf("completion changed another request: %v", headers)
+	}
+}
+
+func TestAccountHeaderFallbackDoesNotMergeExplicitSelection(t *testing.T) {
+	l, _ := testLimiter()
+	l.directory.setLoader(func() ([]credentialEmail, error) {
+		return []credentialEmail{
+			{ID: "auth-a", AuthIndex: "index-a", Email: "alice@example.com"},
+			{ID: "auth-b", AuthIndex: "index-b", Email: "bob@example.com"},
+		}, nil
+	})
+	startAccountHeaderRequest(t, l, "request", "index-a", "auth-a")
+	for _, tc := range []struct {
+		name     string
+		metadata map[string]any
+		index    string
+		email    string
+	}{
+		{"index only", map[string]any{"selected_auth_index": "index-b"}, "index-b", "bob@example.com"},
+		{"ID only", map[string]any{"selected_auth_id": "auth-b"}, "index-b", "bob@example.com"},
+		{"conflicting pair", map[string]any{"selected_auth_id": "auth-a", "selected_auth_index": "index-b"}, "index-b", ""},
+		{"empty selection", map[string]any{"selected_auth_index": ""}, "", ""},
+		{"invalid selection", map[string]any{"selected_auth_index": "bad\r\nInjected: yes"}, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := accountHeaderFallback(t, l, "request", tc.metadata)
+			if headers.Get(accountEmailHeader) != tc.email || headers.Get(authIndexHeader) != tc.index {
+				t.Fatalf("mixed explicit and remembered identity: %v", headers)
+			}
+		})
+	}
+}
+
+func TestAccountHeaderFallbackClearsRejectedSelection(t *testing.T) {
+	l, _ := testLimiter()
+	startAccountHeaderRequest(t, l, "request", "index-a", "auth-a")
+	response := call[pluginapi.RequestInterceptResponse](t, l, pluginabi.MethodRequestInterceptAfter, pluginapi.RequestInterceptRequest{RequestID: "request"})
+	if !response.Terminate {
+		t.Fatal("missing selection was admitted")
+	}
+	if headers := accountHeaderFallback(t, l, "request", nil); len(headers) != 0 {
+		t.Fatalf("rejected attempt retained an earlier account: %v", headers)
+	}
+}
+
+func startAccountHeaderRequest(t *testing.T, l *limiter, requestID, index, id string) {
+	t.Helper()
+	before := call[pluginapi.RequestInterceptResponse](t, l, pluginabi.MethodRequestInterceptBefore, pluginapi.RequestInterceptRequest{RequestID: requestID})
+	after := call[pluginapi.RequestInterceptResponse](t, l, pluginabi.MethodRequestInterceptAfter, pluginapi.RequestInterceptRequest{
+		RequestID: requestID, Metadata: map[string]any{"selected_auth_index": index, "selected_auth_id": id},
+	})
+	if before.Terminate || after.Terminate {
+		t.Fatalf("request admission failed: before=%+v after=%+v", before, after)
+	}
+}
+
+func accountHeaderFallback(t *testing.T, l *limiter, requestID string, metadata map[string]any) http.Header {
+	t.Helper()
+	return call[pluginapi.StreamChunkInterceptResponse](t, l, pluginabi.MethodResponseInterceptStreamChunk, pluginapi.StreamChunkInterceptRequest{
+		RequestID: requestID, ChunkIndex: pluginapi.StreamChunkHeaderInitIndex, Metadata: metadata,
+	}).Headers
+}

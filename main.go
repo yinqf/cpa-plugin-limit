@@ -117,7 +117,7 @@ func (l *limiter) handle(method string, raw []byte) ([]byte, error) {
 		if err := json.Unmarshal(raw, &req); err != nil {
 			return nil, fmt.Errorf("decode response header initialization: %w", err)
 		}
-		return ok(pluginapi.ResponseInterceptResponse{Headers: l.accountResponseHeaders(req.Metadata), ClearHeaders: accountResponseHeaderNames()})
+		return ok(pluginapi.ResponseInterceptResponse{Headers: l.accountResponseHeaders(req), ClearHeaders: accountResponseHeaderNames()})
 	case pluginabi.MethodResponseInterceptStreamChunk:
 		var req accountResponseRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
@@ -126,7 +126,7 @@ func (l *limiter) handle(method string, raw []byte) ([]byte, error) {
 		if req.ChunkIndex != pluginapi.StreamChunkHeaderInitIndex {
 			return ok(pluginapi.StreamChunkInterceptResponse{})
 		}
-		return ok(pluginapi.StreamChunkInterceptResponse{Headers: l.accountResponseHeaders(req.Metadata), ClearHeaders: accountResponseHeaderNames()})
+		return ok(pluginapi.StreamChunkInterceptResponse{Headers: l.accountResponseHeaders(req), ClearHeaders: accountResponseHeaderNames()})
 	case pluginabi.MethodRequestComplete:
 		var req pluginapi.RequestCompletion
 		if err := json.Unmarshal(raw, &req); err != nil {

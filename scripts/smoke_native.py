@@ -196,15 +196,47 @@ def main():
     unknown = call("response.intercept_stream_chunk", {"ChunkIndex": -1})
     assert not unknown["Headers"] and len(unknown["ClearHeaders"]) == 2
     assert len(host_calls) == 1 and not host_buffers
+    # The real host may lose selected_auth_* between executor and response hooks.
+    # Mirror its lifecycle with metadata only on after-auth, then switch accounts.
+    call("plugin.reconfigure", {
+        "schema_version": 6,
+        "config_yaml": base64.b64encode(b"requests_per_minute: 0\nmax_concurrency: 0").decode(),
+    })
+    for request_id, account, email in [
+        ("header-lifecycle", "dummy-account", "alice@example.com"),
+        ("header-other", "another-dummy-account", "bob@example.com"),
+        ("header-lifecycle", "another-dummy-account", "bob@example.com"),
+    ]:
+        before(request_id)
+        assert not after(request_id, account)["Terminate"]
+        initialized = call("response.intercept_stream_chunk", {
+            "RequestID": request_id, "ChunkIndex": -1,
+            "Metadata": {"requested_model": "dummy-model"},
+        })
+        assert initialized["Headers"]["X-Cpa-Account-Email"] == [email]
+        assert initialized["Headers"]["X-Cpa-Auth-Index"] == [account]
+        response = call("response.intercept_after", {"RequestID": request_id})
+        assert response["Headers"]["X-Cpa-Account-Email"] == [email]
+    complete("header-lifecycle")
+    cleared = call("response.intercept_stream_chunk", {
+        "RequestID": "header-lifecycle", "ChunkIndex": -1,
+    })
+    assert not cleared["Headers"], "completed lifecycle leaked account identity"
+    other = call("response.intercept_stream_chunk", {
+        "RequestID": "header-other", "ChunkIndex": -1,
+    })
+    assert other["Headers"]["X-Cpa-Account-Email"] == ["bob@example.com"]
+    complete("header-other")
+    call("plugin.reconfigure", {"schema_version": 6})
     resource = call("management.handle", {"Method": "GET", "Path": "/status"})
     status = json.loads(base64.b64decode(resource["Body"]))
     observed = datetime.fromisoformat(status["observed_at"].replace("Z", "+00:00"))
     assert status["statistics_date"] == observed.astimezone(timezone(timedelta(hours=8))).date().isoformat()
-    assert status["admitted"] == 6 and status["rejected"] == 2
+    assert status["admitted"] == 9 and status["rejected"] == 2
     if args.expected_version:
         assert status["version"] == args.expected_version
     assert status["active_requests"] == 0
-    assert status["active_slots"] == 0 and status["window_requests"] == 6
+    assert status["active_slots"] == 0 and status["window_requests"] == 9
     assert status["rate_rejected"] == 1 and status["concurrency_rejected"] == 1
     assert status["defaults"] == {"requests_per_minute": 5, "max_concurrency": 1}
     assert status["scope"]["all_credentials"]
@@ -218,7 +250,7 @@ def main():
         call("plugin.reconfigure", {"schema_version": 6, "config_yaml": base64.b64encode(f"account_display: {mode}".encode()).decode()})
         resource = call("management.handle", {"Method": "GET", "Path": "/status"})
         displayed = json.loads(base64.b64decode(resource["Body"]))
-        assert displayed["admitted"] == 6 and displayed["rejected"] == 2
+        assert displayed["admitted"] == 9 and displayed["rejected"] == 2
         if mode == "masked_email":
             assert {row["label"] for row in displayed["items"]} == {"al***@example.com", "bo***@example.com"}
             assert "alice@example.com" not in json.dumps(displayed)
@@ -231,7 +263,7 @@ def main():
     fallback = json.loads(base64.b64decode(fallback_resource["Body"]))
     assert not fallback["email_lookup_available"]
     assert all("label" not in row for row in fallback["items"])
-    assert fallback["admitted"] == 6 and fallback["rejected"] == 2
+    assert fallback["admitted"] == 9 and fallback["rejected"] == 2
     call("plugin.reconfigure", {"schema_version": 6, "config_yaml": base64.b64encode(b"requests_per_minute: 2\nmax_concurrency: 0").decode()})
     selected = []
     for i in range(5):

@@ -231,7 +231,11 @@ X-CPA-Auth-Index: selected-credential-index
 
 These diagnostic headers identify the host's currently selected credential from
 `selected_auth_index` / `selected_auth_id`, not the scheduler's cached binding or
-an account group's combined label. They work in both routing modes and are
+an account group's combined label. When CPA omits selection metadata from response
+hooks, the plugin uses the latest admitted credential for the same lifecycle
+request ID. Each admitted attempt replaces that pair, and request completion
+deletes it. Explicit response selection metadata takes precedence without merging
+identities from earlier attempts. They work in both routing modes and are
 independent of the monitor-only `account_display` setting. A gateway can record
 the headers separately for each retry without changing the prompt cache key.
 The same email with different indexes identifies different credentials, not
@@ -257,7 +261,8 @@ Version `0.1.7` advertised the streaming hook under an unrecognized capability
 name, so CPA could report the plugin as active without invoking its stream
 header hook. Use a newer build with `response_stream_interceptor` and reload the
 plugin. The native smoke test checks response capability names against the
-pinned CPA host's actual RPC schema before exercising the hooks.
+pinned CPA host's actual RPC schema before exercising the hooks, including the
+host lifecycle where response metadata omits the selected credential.
 
 These headers contain full account emails and credential indexes. A gateway that
 uses them for administrative retry logs should consume them without forwarding
