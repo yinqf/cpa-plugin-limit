@@ -68,9 +68,11 @@ Copyable JSON examples are available under **配置填写示例** on the plugin'
 monitoring page. Configuration field descriptions use plain-text instructions
 so the host's HTML sanitization does not expose encoded quotation marks.
 
-Requires a plugin-enabled CPA build with RPC schema **2+**, request termination,
-and lifecycle completion. The SDK dependency matches the reference plugin
-(`v7.3.4`); native ABI 1 and the schema-2 contract also work with the current v8 host.
+Requires a plugin-enabled CPA build with RPC schema **5+**, request termination,
+lifecycle completion, and stream header initialization. The SDK dependency matches
+the reference plugin (`v7.3.4`); native ABI 1 and the schema-5 contract also work with
+the current v8 host. Schema 5 avoids copying prompts and stream history into every
+payload callback.
 
 ```yaml
 plugins:
@@ -217,6 +219,44 @@ totals and retains only identities still needed by live/recent enforcement bucke
 Exhaustion or missing required host identity returns **503**
 instead of silently bypassing protection. Completion is asynchronous in CPA, so a
 recently finished request may briefly retain its slot until notification arrives.
+
+## Account response headers
+
+Successful non-streaming responses and HTTP stream header initialization add:
+
+```http
+X-CPA-Account-Email: alice@example.com
+X-CPA-Auth-Index: selected-credential-index
+```
+
+These diagnostic headers identify the host's currently selected credential from
+`selected_auth_index` / `selected_auth_id`, not the scheduler's cached binding or
+an account group's combined label. They work in both routing modes and are
+independent of the monitor-only `account_display` setting. A gateway can record
+the headers separately for each retry without changing the prompt cache key.
+The same email with different indexes identifies different credentials, not
+necessarily different real accounts. One response does not list every attempt
+made internally by CPA.
+
+Email resolution reuses the 30-second host directory cache. Missing, invalid,
+ambiguous, or unavailable email data omits the email header while retaining a
+known index. ID-only selections resolve their index through the directory when
+available; raw credential IDs and file names are never returned as indexes or
+guessed email addresses. Both diagnostic header names are cleared before current
+values are added, so an upstream or previous account cannot supply a stale label.
+
+Stream payload callbacks return no modifications and never look up credentials.
+No stream buffering, extra upstream request, or fixed wait is introduced. The
+plugin only annotates responses passing through the response/header-init hooks:
+an HTTP 200 stream that later reports overload keeps its initial account headers,
+but pre-stream HTTP errors, account-selection failures, plugin admission
+rejections, and WebSocket turns are not guaranteed to carry them. Header changes
+require reloading the updated plugin so CPA discovers the new capabilities.
+
+These headers contain full account emails and credential indexes. A gateway that
+uses them for administrative retry logs should consume them without forwarding
+them to its own clients. With this feature, they are an intentional exception to
+the monitor's credential-identity redaction contract.
 
 ## Host boundaries
 

@@ -69,6 +69,9 @@ def main():
         assert registration["metadata"]["Version"] == args.expected_version
     assert registration["capabilities"]["scheduler"]
     assert registration["capabilities"]["scheduler_across_priorities"]
+    assert registration["schema_version"] == 5
+    assert registration["capabilities"]["response_interceptor"]
+    assert registration["capabilities"]["stream_chunk_interceptor"]
     fields = {field["Name"]: field for field in registration["metadata"]["ConfigFields"]}
     assert fields["requests_per_minute"]["Default"] == 5
     assert fields["max_concurrency"]["Default"] == 1
@@ -147,6 +150,31 @@ def main():
     assert not after("isolated", "another-dummy-account")["Terminate"]
     complete("isolated")
     assert not host_calls, "email lookup ran on the admission path"
+    for account, email in [("dummy-account", "alice@example.com"),
+                           ("another-dummy-account", "bob@example.com")]:
+        initialized = call("response.intercept_stream_chunk", {
+            "RequestID": "same-cpa-request", "ChunkIndex": -1,
+            "Metadata": {"selected_auth_index": account},
+        })
+        assert initialized["Headers"]["X-Cpa-Account-Email"] == [email]
+        assert initialized["Headers"]["X-Cpa-Auth-Index"] == [account]
+        assert set(initialized["ClearHeaders"]) == {"X-CPA-Account-Email", "X-CPA-Auth-Index"}
+        assert not initialized["Body"] and not initialized["DropChunk"]
+    response = call("response.intercept_after", {
+        "Metadata": {"selected_auth_index": "dummy-account"},
+        "Body": base64.b64encode(b'{"output":[]}').decode(),
+    })
+    assert response["Headers"]["X-Cpa-Account-Email"] == ["alice@example.com"]
+    assert not response["Body"]
+    payload = call("response.intercept_stream_chunk", {
+        "ChunkIndex": 0, "Body": base64.b64encode(b'data: {"type":"error"}\n\n').decode(),
+        "Metadata": {"selected_auth_index": "dummy-account"},
+    })
+    assert not payload["Headers"] and not payload["ClearHeaders"]
+    assert not payload["Body"] and not payload["DropChunk"]
+    unknown = call("response.intercept_stream_chunk", {"ChunkIndex": -1})
+    assert not unknown["Headers"] and len(unknown["ClearHeaders"]) == 2
+    assert len(host_calls) == 1 and not host_buffers
     resource = call("management.handle", {"Method": "GET", "Path": "/status"})
     status = json.loads(base64.b64decode(resource["Body"]))
     observed = datetime.fromisoformat(status["observed_at"].replace("Z", "+00:00"))
@@ -203,7 +231,7 @@ def main():
     call("plugin.quiesce", {})
     assert call("request.intercept_before", {"RequestID": "stopped"})["StatusCode"] == 503
     api.shutdown()
-    print("Native ABI smoke passed: registration, account isolation, concurrency, RPM, release, host email callbacks, redaction, shutdown")
+    print("Native ABI smoke passed: registration, account isolation, concurrency, RPM, release, account response headers, host email callbacks, redaction, shutdown")
 
 
 if __name__ == "__main__":

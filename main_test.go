@@ -38,7 +38,7 @@ func call[T any](t *testing.T, l *limiter, method string, value any) T {
 func TestRegistrationAndVisualConfigurationContract(t *testing.T) {
 	l, _ := testLimiter()
 	reg := call[registration](t, l, pluginabi.MethodPluginRegister, registerRequest{SchemaVersion: 6})
-	if reg.SchemaVersion != 2 || reg.Metadata.Name != pluginName || !reg.Capabilities["scheduler"] || !reg.Capabilities["scheduler_across_priorities"] || !reg.Capabilities["request_lifecycle_plugin"] {
+	if reg.SchemaVersion != pluginSchemaVersion || reg.Metadata.Name != pluginName || !reg.Capabilities["scheduler"] || !reg.Capabilities["scheduler_across_priorities"] || !reg.Capabilities["request_lifecycle_plugin"] || !reg.Capabilities["response_interceptor"] || !reg.Capabilities["stream_chunk_interceptor"] {
 		t.Fatalf("unexpected registration: %+v", reg)
 	}
 	fields := make(map[string]bool)
@@ -156,10 +156,10 @@ func TestInvalidConfigurationDoesNotReplaceActiveSettings(t *testing.T) {
 			}
 		})
 	}
-	for _, schema := range []uint32{0, 1} {
+	for _, schema := range []uint32{0, 1, 2, 3, 4} {
 		raw, _ := json.Marshal(registerRequest{SchemaVersion: schema})
 		if _, err := parseConfig(raw); err == nil {
-			t.Fatal("host without lifecycle support accepted")
+			t.Fatal("host without the required stream schema accepted")
 		}
 	}
 }

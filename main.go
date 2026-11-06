@@ -14,6 +14,9 @@ import (
 
 const pluginName = "cpa-plugin-limit"
 
+// Omit request bodies and stream history on payload chunk callbacks.
+const pluginSchemaVersion uint32 = 5
+
 // pluginVersion is injected by the release build.
 var pluginVersion = "0.1.0"
 
@@ -40,7 +43,7 @@ type pluginMetadata struct {
 
 func pluginRegistration() registration {
 	return registration{
-		SchemaVersion: 2,
+		SchemaVersion: pluginSchemaVersion,
 		Metadata: pluginMetadata{
 			Metadata: pluginapi.Metadata{
 				Name: pluginName, Version: pluginVersion, Author: "yinqf",
@@ -57,7 +60,7 @@ func pluginRegistration() registration {
 				{ConfigField: pluginapi.ConfigField{Name: "session_affinity_ttl_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "插件会话亲和缓存有效期，默认 3600 秒，范围 0～86400；每次命中刷新有效期，0 关闭亲和。仅 capacity-aware 模式生效；账户满额时切换并更新绑定。"}, Default: 3600},
 			},
 		},
-		Capabilities: map[string]bool{"scheduler": true, "scheduler_across_priorities": true, "request_interceptor": true, "request_lifecycle_plugin": true, "management_api": true},
+		Capabilities: map[string]bool{"scheduler": true, "scheduler_across_priorities": true, "request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "stream_chunk_interceptor": true, "management_api": true},
 	}
 }
 
@@ -109,6 +112,21 @@ func (l *limiter) handle(method string, raw []byte) ([]byte, error) {
 			response.ClearHeaders = []string{routingHeader}
 		}
 		return ok(response)
+	case pluginabi.MethodResponseInterceptAfter:
+		var req accountResponseRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, fmt.Errorf("decode response header initialization: %w", err)
+		}
+		return ok(pluginapi.ResponseInterceptResponse{Headers: l.accountResponseHeaders(req.Metadata), ClearHeaders: accountResponseHeaderNames()})
+	case pluginabi.MethodResponseInterceptStreamChunk:
+		var req accountResponseRequest
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return nil, fmt.Errorf("decode stream header initialization: %w", err)
+		}
+		if req.ChunkIndex != pluginapi.StreamChunkHeaderInitIndex {
+			return ok(pluginapi.StreamChunkInterceptResponse{})
+		}
+		return ok(pluginapi.StreamChunkInterceptResponse{Headers: l.accountResponseHeaders(req.Metadata), ClearHeaders: accountResponseHeaderNames()})
 	case pluginabi.MethodRequestComplete:
 		var req pluginapi.RequestCompletion
 		if err := json.Unmarshal(raw, &req); err != nil {

@@ -52,8 +52,8 @@ func parseConfig(raw []byte) (config, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return config{}, fmt.Errorf("decode registration: %w", err)
 	}
-	if req.SchemaVersion < 2 {
-		return config{}, fmt.Errorf("host RPC schema version 2 or newer is required for termination and lifecycle completion")
+	if req.SchemaVersion < pluginSchemaVersion {
+		return config{}, fmt.Errorf("host RPC schema version %d or newer is required for stream account response headers", pluginSchemaVersion)
 	}
 	cfg := defaultConfig()
 	var document yaml.Node
