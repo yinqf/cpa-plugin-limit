@@ -38,7 +38,7 @@ func call[T any](t *testing.T, l *limiter, method string, value any) T {
 func TestRegistrationAndVisualConfigurationContract(t *testing.T) {
 	l, _ := testLimiter()
 	reg := call[registration](t, l, pluginabi.MethodPluginRegister, registerRequest{SchemaVersion: 6})
-	if reg.SchemaVersion != pluginSchemaVersion || reg.Metadata.Name != pluginName || !reg.Capabilities["scheduler"] || !reg.Capabilities["scheduler_across_priorities"] || !reg.Capabilities["request_lifecycle_plugin"] || !reg.Capabilities["response_interceptor"] || !reg.Capabilities["stream_chunk_interceptor"] {
+	if reg.SchemaVersion != pluginSchemaVersion || reg.Metadata.Name != pluginName || !reg.Capabilities["scheduler"] || !reg.Capabilities["scheduler_across_priorities"] || !reg.Capabilities["request_lifecycle_plugin"] || !reg.Capabilities["response_interceptor"] {
 		t.Fatalf("unexpected registration: %+v", reg)
 	}
 	fields := make(map[string]bool)
@@ -55,6 +55,11 @@ func TestRegistrationAndVisualConfigurationContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	var wire struct {
+		// Match the host's wire contract instead of asserting the plugin's map keys.
+		Capabilities struct {
+			ResponseInterceptor    bool `json:"response_interceptor"`
+			StreamChunkInterceptor bool `json:"response_stream_interceptor"`
+		} `json:"capabilities"`
 		Metadata struct {
 			Name         string
 			ConfigFields []struct {
@@ -66,6 +71,9 @@ func TestRegistrationAndVisualConfigurationContract(t *testing.T) {
 	}
 	if err := json.Unmarshal(encoded, &wire); err != nil {
 		t.Fatal(err)
+	}
+	if !wire.Capabilities.ResponseInterceptor || !wire.Capabilities.StreamChunkInterceptor {
+		t.Fatalf("CPA cannot discover response hooks from the wire registration: %s", encoded)
 	}
 	wantDefaults := map[string]string{"requests_per_minute": "5", "max_concurrency": "1", "auth_indexes": "[]", "account_groups": "{}", "account_limits": "{}", "account_display": `"email"`, "routing_mode": `"capacity-aware"`, "session_affinity_ttl_seconds": "3600"}
 	if wire.Metadata.Name != pluginName || len(wire.Metadata.ConfigFields) != len(wantDefaults) {

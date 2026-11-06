@@ -253,6 +253,12 @@ but pre-stream HTTP errors, account-selection failures, plugin admission
 rejections, and WebSocket turns are not guaranteed to carry them. Header changes
 require reloading the updated plugin so CPA discovers the new capabilities.
 
+Version `0.1.7` advertised the streaming hook under an unrecognized capability
+name, so CPA could report the plugin as active without invoking its stream
+header hook. Use a newer build with `response_stream_interceptor` and reload the
+plugin. The native smoke test checks response capability names against the
+pinned CPA host's actual RPC schema before exercising the hooks.
+
 These headers contain full account emails and credential indexes. A gateway that
 uses them for administrative retry logs should consume them without forwarding
 them to its own clients. With this feature, they are an intentional exception to

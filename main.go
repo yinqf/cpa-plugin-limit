@@ -60,7 +60,7 @@ func pluginRegistration() registration {
 				{ConfigField: pluginapi.ConfigField{Name: "session_affinity_ttl_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "插件会话亲和缓存有效期，默认 3600 秒，范围 0～86400；每次命中刷新有效期，0 关闭亲和。仅 capacity-aware 模式生效；账户满额时切换并更新绑定。"}, Default: 3600},
 			},
 		},
-		Capabilities: map[string]bool{"scheduler": true, "scheduler_across_priorities": true, "request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "stream_chunk_interceptor": true, "management_api": true},
+		Capabilities: map[string]bool{"scheduler": true, "scheduler_across_priorities": true, "request_interceptor": true, "request_lifecycle_plugin": true, "response_interceptor": true, "response_stream_interceptor": true, "management_api": true},
 	}
 }
 

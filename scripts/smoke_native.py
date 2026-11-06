@@ -7,6 +7,8 @@ import ctypes
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
+import subprocess
 
 
 class Buffer(ctypes.Structure):
@@ -39,6 +41,23 @@ class HostAPI(ctypes.Structure):
     ]
 
 
+def host_response_capabilities():
+    """Read response capability names from the pinned CPA host's RPC contract."""
+    module_dir = subprocess.check_output(
+        ["go", "list", "-m", "-f", "{{.Dir}}", "github.com/router-for-me/CLIProxyAPI/v7"],
+        cwd=Path(__file__).resolve().parents[1], text=True,
+    ).strip()
+    source = (Path(module_dir) / "internal/pluginhost/rpc_schema.go").read_text()
+    capabilities = re.search(r"type rpcCapabilities struct \{(.*?)\n\}", source, re.S)
+    assert capabilities, "CPA host RPC capability schema was not found"
+    fields = dict(re.findall(
+        r'\b(ResponseInterceptor|StreamChunkInterceptor)\s+bool\s+`json:"([^",]+)',
+        capabilities.group(1),
+    ))
+    assert len(fields) == 2, "CPA host response capability names were not found"
+    return fields
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("library", type=Path)
@@ -64,6 +83,8 @@ def main():
         return response["result"]
 
     registration = call("plugin.register", {"schema_version": 6})
+    for field, name in host_response_capabilities().items():
+        assert registration["capabilities"].get(name), f"CPA host cannot register {field}: missing {name}"
     assert registration["metadata"]["Name"] == "cpa-plugin-limit"
     if args.expected_version:
         assert registration["metadata"]["Version"] == args.expected_version
@@ -71,7 +92,7 @@ def main():
     assert registration["capabilities"]["scheduler_across_priorities"]
     assert registration["schema_version"] == 5
     assert registration["capabilities"]["response_interceptor"]
-    assert registration["capabilities"]["stream_chunk_interceptor"]
+    assert registration["capabilities"]["response_stream_interceptor"]
     fields = {field["Name"]: field for field in registration["metadata"]["ConfigFields"]}
     assert fields["requests_per_minute"]["Default"] == 5
     assert fields["max_concurrency"]["Default"] == 1
